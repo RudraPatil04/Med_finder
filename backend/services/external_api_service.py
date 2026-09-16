@@ -26,15 +26,16 @@ if str(ROOT_DIR) not in sys.path:
 
 from backend.config import RXNORM_API_BASE_URL, RXNORM_API_TIMEOUT
 from backend.database import execute_non_query
+from backend.services.pharmeasy_service import get_pharmeasy_price
 
 
 # ============================================================
 # Search RxNorm API
 # ============================================================
 
-def search_rxnorm(query, limit=10):
+def search_rxnorm(query, limit=10, fetch_prices=True):
     """
-    Search RxNorm API for medicine information.
+    Search RxNorm API for medicine information and optionally fetch prices.
 
     Parameters
     ----------
@@ -42,6 +43,8 @@ def search_rxnorm(query, limit=10):
         Medicine name to search
     limit : int
         Maximum results to return
+    fetch_prices : bool
+        Whether to scrape prices from 1mg
 
     Returns
     -------
@@ -81,6 +84,17 @@ def search_rxnorm(query, limit=10):
             for concept in group["conceptProperties"][:limit]:
                 medicine = parse_rxnorm_concept(concept)
                 if medicine:
+                    # Try to fetch price if enabled
+                    if fetch_prices and medicine['price'] is None:
+                        print(f"Attempting to fetch price for: {medicine['medicine_name']}")
+                        price_data = get_pharmeasy_price(medicine['medicine_name'])
+
+                        if price_data:
+                            medicine['price'] = price_data['price']
+                            print(f"  -> Price found: Rs. {price_data['price']}")
+                        else:
+                            print(f"  -> Price not found")
+
                     medicines.append(medicine)
 
         return medicines[:limit]

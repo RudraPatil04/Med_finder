@@ -28,6 +28,11 @@ RXNORM_API_BASE_URL = "https://rxnav.nlm.nih.gov/REST"
 
 RXNORM_API_TIMEOUT = 5  # seconds
 
+# Price Scraper Configuration
+PRICE_SCRAPER_TIMEOUT = 3  # seconds
+
+PRICE_SCRAPER_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
 # -------------------------------------------------------
 # DATASETS
 # -------------------------------------------------------
