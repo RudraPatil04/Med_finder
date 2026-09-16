@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+ENV/
+*.egg-info/
+
+# Large datasets (too big for GitHub)
+datasets/*.csv
+datasets/*.xlsx
+!datasets/.gitkeep
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Database
+*.db
+*.db-journal
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Uploads
+uploads/*
+!uploads/.gitkeep
+
+# Reports
+reports/*
+!reports/.gitkeep
+
+# Models
+models/*
+!models/.gitkeep
+
+# Logs
+*.log
+
+# Claude
+.claude/sessions/
+.claude/worktrees/
+.claude/.headroom_wrap_settings.lock

@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Search medicines, compare prices, scan prescriptions, and explore healthcare guidance with MED FINDER.">
+    <title>{% block title %}MED FINDER - Find Medicines Smarter with AI{% endblock %}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Poppins:wght@500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body class="{% block body_class %}{% endblock %}">
+    <header class="site-header glass">
+        <div class="nav-wrap">
+            <a class="brand" href="/" aria-label="MED FINDER home">
+                <span class="brand-mark"><span class="icon icon-pill"></span></span>
+                <span>
+                    <strong>MED FINDER</strong>
+                    <small>AI Medicine Search</small>
+                </span>
+            </a>
+
+            <nav class="main-nav" id="mainNav" aria-label="Main navigation">
+                <a href="/" data-nav="/">Home</a>
+                <a href="/search" data-nav="/search">Search</a>
+                <a href="/scanner" data-nav="/scanner">Scanner</a>
+                <a href="/disease" data-nav="/disease">Disease</a>
+                <a href="/assistant" data-nav="/assistant">AI Assistant</a>
+            </nav>
+
+            <a class="nav-cta" href="/search"><span class="icon icon-search"></span> Search Medicines</a>
+            <button class="nav-toggle" type="button" aria-label="Open menu" aria-expanded="false" data-nav-toggle>
+                <span></span><span></span><span></span>
+            </button>
+        </div>
+    </header>
+
+    <main>
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer class="site-footer">
+        <div class="footer-grid">
+            <section>
+                <a class="brand footer-brand" href="/">
+                    <span class="brand-mark"><span class="icon icon-pill"></span></span>
+                    <span><strong>MED FINDER</strong></span>
+                </a>
+                <p>Find medicines smarter with AI. Search, compare, and understand your medications instantly.</p>
+                <div class="social-row">
+                    <a href="#" aria-label="Twitter"><span class="icon icon-twitter"></span></a>
+                    <a href="#" aria-label="Github"><span class="icon icon-github"></span></a>
+                    <a href="#" aria-label="LinkedIn"><span class="icon icon-linkedin"></span></a>
+                    <a href="#" aria-label="Email"><span class="icon icon-mail"></span></a>
+                </div>
+            </section>
+            <section>
+                <h2>Product</h2>
+                <a href="/search">Search Medicines</a>
+                <a href="/scanner">Prescription Scanner</a>
+                <a href="/disease">Disease Guidance</a>
+                <a href="/assistant">AI Assistant</a>
+            </section>
+            <section>
+                <h2>Resources</h2>
+                <a href="/">About</a>
+                <a href="/">How it works</a>
+                <a href="/">FAQ</a>
+                <a href="/">Contact</a>
+            </section>
+            <section>
+                <h2>Legal</h2>
+                <a href="/">Privacy Policy</a>
+                <a href="/">Terms of Service</a>
+                <a href="/">Medical Disclaimer</a>
+                <a href="/">Cookie Policy</a>
+            </section>
+        </div>
+        <div class="footer-bottom">
+            <span>Copyright 2026 MED FINDER. All rights reserved.</span>
+            <span>Not a substitute for professional medical advice.</span>
+        </div>
+    </footer>
+
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>

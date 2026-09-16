@@ -1,0 +1,2 @@
+# This folder contains large CSV files that are not tracked in Git
+# Download or generate them using the ETL pipeline

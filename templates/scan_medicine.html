@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+
+{% block title %}Prescription Scanner - MED FINDER{% endblock %}
+{% block body_class %}page-hero{% endblock %}
+
+{% block content %}
+<section class="app-shell scanner-page">
+    <div class="page-heading">
+        <span class="pill-label"><span class="icon icon-scan"></span> Prescription OCR</span>
+        <h1>Scan your <span>prescription</span></h1>
+        <p>Drop a clear photo or PDF and review extracted medicine information in a clean, structured workflow.</p>
+    </div>
+
+    <div class="scanner-layout">
+        <section class="upload-zone glass" id="uploadZone">
+            <label class="drop-card" for="prescriptionFile">
+                <span class="upload-mark"><span class="icon icon-upload"></span></span>
+                <strong>Drag and drop a prescription</strong>
+                <small>PNG, JPG, or PDF up to 10MB</small>
+                <span class="drop-actions">
+                    <span>Choose file</span>
+                    <span><span class="icon icon-camera"></span> Use camera</span>
+                </span>
+                <input id="prescriptionFile" type="file" accept="image/*,application/pdf" hidden>
+            </label>
+            <div class="scan-preview" id="scanPreview" hidden>
+                <div class="preview-frame" id="previewFrame"><span class="icon icon-file"></span></div>
+                <div>
+                    <p class="eyebrow" id="scanStateLabel">Scanning...</p>
+                    <h2 id="scanTitle">Reading your prescription</h2>
+                    <p id="scanCopy">Running OCR and cross-checking against the medicine database.</p>
+                    <button class="btn btn-outline" type="button" data-scan-reset hidden>Scan another</button>
+                </div>
+            </div>
+        </section>
+
+        <aside class="panel surface-only how-it-works">
+            <h2><span class="icon icon-sparkles"></span> How it works</h2>
+            <ol>
+                <li><span>1</span>Upload a clear photo or PDF of your prescription.</li>
+                <li><span>2</span>The existing OCR backend reads and structures the results.</li>
+                <li><span>3</span>Medicines are matched against your MED FINDER database.</li>
+                <li><span>4</span>You review dosage, alternatives, and price comparison.</li>
+            </ol>
+        </aside>
+    </div>
+
+    <section class="detected-panel panel surface-only" id="detectedPanel" hidden>
+        <h2>Detected medicines</h2>
+        <div id="detectedList" class="detected-list"></div>
+    </section>
+</section>
+{% endblock %}

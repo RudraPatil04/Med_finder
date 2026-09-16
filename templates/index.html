@@ -1,0 +1,150 @@
+{% extends "base.html" %}
+
+{% block title %}MED FINDER - Find Medicines Smarter with AI{% endblock %}
+{% block body_class %}home-page{% endblock %}
+
+{% block content %}
+<section class="hero-section">
+    <div class="soft-orbit orbit-one"></div>
+    <div class="soft-orbit orbit-two"></div>
+    <div class="hero-inner">
+        <div class="hero-copy">
+            <div class="pill-label"><span class="icon icon-sparkles"></span> Powered by AI | 350,000+ medicines indexed</div>
+            <h1>Find Medicines <span>Smarter</span><br>with AI</h1>
+            <p>Search compositions, compare prices, discover cheaper generics, and scan prescriptions instantly. Built for patients, pharmacists, and clinicians.</p>
+        </div>
+
+        <form class="hero-search glass" data-global-search>
+            <span class="search-icon icon icon-search"></span>
+            <input type="search" name="q" placeholder="Search 350,000+ medicines, brands, compositions..." autocomplete="off">
+            <button class="voice-btn" type="button" title="Voice search"><span class="icon icon-mic"></span></button>
+            <a class="upload-btn" href="/scanner"><span class="icon icon-upload"></span> Prescription</a>
+            <button class="btn btn-gradient" type="submit">Search <span class="icon icon-arrow-right"></span></button>
+        </form>
+
+        <div class="popular-row">
+            <span>Popular:</span>
+            <a href="/search?q=Paracetamol">Paracetamol</a>
+            <a href="/search?q=Dolo%20650">Dolo 650</a>
+            <a href="/search?q=Azithromycin">Azithromycin</a>
+            <a href="/search?q=Metformin">Metformin</a>
+            <a href="/search?q=Cetirizine">Cetirizine</a>
+        </div>
+
+        <div class="trust-grid">
+            <article class="glass card-hover">
+                <span class="feature-icon"><span class="icon icon-zap"></span></span>
+                <h2>Instant search</h2>
+                <p>Live results from your SQLite medicine database.</p>
+            </article>
+            <article class="glass card-hover">
+                <span class="feature-icon"><span class="icon icon-shield"></span></span>
+                <h2>Verified data</h2>
+                <p>Uses the MED FINDER ETL-backed medicine records.</p>
+            </article>
+            <article class="glass card-hover">
+                <span class="feature-icon"><span class="icon icon-heart"></span></span>
+                <h2>AI guidance</h2>
+                <p>Ready for the existing AI service when enabled.</p>
+            </article>
+        </div>
+    </div>
+</section>
+
+<section class="section app-shell">
+    <div class="section-heading">
+        <span class="eyebrow">Quick Services</span>
+        <h2>Everything you need in one place</h2>
+    </div>
+    <div class="service-grid">
+        <a class="service-card card-hover" href="/search"><span class="tag">Popular</span><span class="feature-icon soft"><span class="icon icon-search"></span></span><strong>Search Medicines</strong><small>Live search across the database</small></a>
+        <a class="service-card card-hover" href="/scanner"><span class="tag">New</span><span class="feature-icon soft"><span class="icon icon-scan"></span></span><strong>Scan Prescription</strong><small>OCR-ready upload workflow</small></a>
+        <a class="service-card card-hover" href="/disease"><span class="feature-icon soft"><span class="icon icon-stethoscope"></span></span><strong>Disease Guidance</strong><small>Symptoms and lifestyle guidance</small></a>
+        <a class="service-card card-hover" href="/assistant"><span class="tag">AI</span><span class="feature-icon soft"><span class="icon icon-bot"></span></span><strong>AI Assistant</strong><small>Ask anything, safely</small></a>
+        <a class="service-card card-hover" href="/"><span class="tag muted">Soon</span><span class="feature-icon soft"><span class="icon icon-map"></span></span><strong>Nearby Pharmacies</strong><small>Location-based results</small></a>
+    </div>
+</section>
+
+<section class="section app-shell">
+    <div class="section-heading">
+        <span class="eyebrow">Categories</span>
+        <h2>Browse by medicine category</h2>
+    </div>
+    <div class="category-grid">
+        {% for name, icon, count in [
+            ("Pain Relief", "pill", "12,480"),
+            ("Antibiotic", "shield", "8,320"),
+            ("Diabetes", "activity", "4,210"),
+            ("Cardiac", "heart", "5,560"),
+            ("Allergy", "sparkles", "3,120"),
+            ("Gastro", "stethoscope", "6,480"),
+            ("Vitamins", "plus", "9,800"),
+            ("Skin Care", "sparkles", "4,260")
+        ] %}
+        <a class="category-card card-hover" href="/search?q={{ name }}">
+            <span class="category-icon icon icon-{{ icon }}"></span>
+            <span><strong>{{ name }}</strong><small>{{ count }} medicines</small></span>
+        </a>
+        {% endfor %}
+    </div>
+</section>
+
+<section class="section app-shell">
+    <div class="split-heading">
+        <div><span class="eyebrow">Trending</span><h2>Popular medicines this week</h2></div>
+        <a href="/search">View all <span class="icon icon-arrow-right"></span></a>
+    </div>
+    <div class="medicine-grid" id="homeMedicines" data-home-medicines></div>
+</section>
+
+<section class="feature-band">
+    <div class="app-shell">
+        <div class="section-heading">
+            <span class="eyebrow">Features</span>
+            <h2>A better way to search medicines</h2>
+        </div>
+        <div class="feature-grid">
+            <article class="glass card-hover"><span class="feature-icon"><span class="icon icon-search"></span></span><h3>Composition Search</h3><p>Find medicines by ingredient, brand, or use case.</p></article>
+            <article class="glass card-hover"><span class="feature-icon"><span class="icon icon-sparkles"></span></span><h3>AI Recommendations</h3><p>Designed for your existing recommendation service.</p></article>
+            <article class="glass card-hover"><span class="feature-icon"><span class="icon icon-scan"></span></span><h3>Prescription OCR</h3><p>Upload prescriptions and prepare structured results.</p></article>
+            <article class="glass card-hover"><span class="feature-icon"><span class="icon icon-stethoscope"></span></span><h3>Disease Guidance</h3><p>Understand conditions in plain language.</p></article>
+            <article class="glass card-hover"><span class="feature-icon"><span class="icon icon-shield"></span></span><h3>Safety First</h3><p>Warnings and prescription labels stay visible.</p></article>
+            <article class="glass card-hover"><span class="feature-icon"><span class="icon icon-zap"></span></span><h3>Blazing Fast</h3><p>Quick, focused search built for everyday medicine lookup.</p></article>
+        </div>
+    </div>
+</section>
+
+<section class="section app-shell">
+    <div class="stats-band">
+        <div><strong>350K+</strong><span>Medicines Indexed</span></div>
+        <div><strong>120K+</strong><span>Generic Matches</span></div>
+        <div><strong>1.2M</strong><span>Users Helped</span></div>
+        <div><strong>42%</strong><span>Avg. Savings</span></div>
+    </div>
+</section>
+
+<section class="section app-shell">
+    <div class="section-heading">
+        <span class="eyebrow">Testimonials</span>
+        <h2>Trusted by patients and professionals</h2>
+    </div>
+    <div class="testimonial-grid">
+        <article class="testimonial card-hover"><div class="stars">5/5</div><p>"MED FINDER helps me quickly cross-check compositions and generics for customers."</p><strong>Priya Sharma</strong><small>Pharmacist, Mumbai</small></article>
+        <article class="testimonial card-hover"><div class="stars">5/5</div><p>"The prescription scanner workflow saves patients time and keeps medicine data clear."</p><strong>Dr. Rohan Mehta</strong><small>General Physician</small></article>
+        <article class="testimonial card-hover"><div class="stars">5/5</div><p>"Found a cheaper generic for my mother's diabetes medicine in seconds."</p><strong>Anjali Verma</strong><small>Patient</small></article>
+    </div>
+</section>
+
+<section class="section faq-shell">
+    <div class="section-heading">
+        <span class="eyebrow">FAQ</span>
+        <h2>Frequently asked questions</h2>
+    </div>
+    <div class="faq-list" data-faq>
+        <article class="open"><button type="button">Is MED FINDER a replacement for a doctor?<span class="icon icon-minus"></span></button><p>No. It provides information and guidance but does not replace professional medical advice.</p></article>
+        <article><button type="button">How accurate is prescription scanning?<span class="icon icon-plus"></span></button><p>Accuracy depends on the existing OCR backend and image quality. Clear, well-lit images work best.</p></article>
+        <article><button type="button">Are prices real time?<span class="icon icon-plus"></span></button><p>Prices are read from your existing SQLite medicine database.</p></article>
+        <article><button type="button">Do you sell medicines directly?<span class="icon icon-plus"></span></button><p>No. MED FINDER is a search, comparison, and guidance platform.</p></article>
+    </div>
+</section>
+{% endblock %}

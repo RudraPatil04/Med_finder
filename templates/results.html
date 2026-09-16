@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+
+{% block title %}Search Medicines - MED FINDER{% endblock %}
+{% block body_class %}page-hero{% endblock %}
+
+{% block content %}
+<section class="app-shell search-page">
+    <form class="search-toolbar glass" id="medicineSearchForm">
+        <span class="search-icon icon icon-search"></span>
+        <input id="medicineSearchInput" type="search" placeholder="Search by brand, composition, or use..." autocomplete="off">
+        <div class="view-toggle" aria-label="View mode">
+            <button class="active" type="button" data-view="grid" title="Grid view"><span class="icon icon-grid"></span></button>
+            <button type="button" data-view="list" title="List view"><span class="icon icon-list"></span></button>
+        </div>
+    </form>
+
+    <div class="search-layout">
+        <aside class="filters panel surface-only">
+            <h2><span class="icon icon-sliders"></span> Filters</h2>
+            <div class="filter-group">
+                <p class="eyebrow">Category</p>
+                <div class="chip-group" id="categoryFilters">
+                    <button class="active" type="button" data-category="All">All</button>
+                    <button type="button" data-category="Pain Relief">Pain Relief</button>
+                    <button type="button" data-category="Antibiotic">Antibiotic</button>
+                    <button type="button" data-category="Diabetes">Diabetes</button>
+                    <button type="button" data-category="Cardiac">Cardiac</button>
+                    <button type="button" data-category="Allergy">Allergy</button>
+                    <button type="button" data-category="Gastro">Gastro</button>
+                </div>
+            </div>
+            <div class="filter-group">
+                <div class="range-label"><span class="eyebrow">Max price</span><strong id="maxPriceLabel">Rs. 1000</strong></div>
+                <input id="maxPrice" type="range" min="10" max="5000" value="1000">
+            </div>
+            <label class="check-row">
+                <input id="rxOnly" type="checkbox">
+                <span>Prescription only</span>
+            </label>
+        </aside>
+
+        <section class="results-panel">
+            <div class="result-meta">
+                <span id="resultCount">Search for a medicine</span>
+                <span>Sort: Relevance</span>
+            </div>
+            <div class="medicine-grid" id="searchResults" data-view-mode="grid">
+                <div class="empty-state panel surface-only">
+                    <span class="feature-icon"><span class="icon icon-search"></span></span>
+                    <h2>Start with a medicine, brand, or composition</h2>
+                    <p>Search results will appear here with price, brand, category, and prescription details.</p>
+                </div>
+            </div>
+            <div class="pagination" id="pagination" hidden>
+                <button type="button" data-page="1" class="active">1</button>
+                <button type="button" data-page="2">2</button>
+                <button type="button" data-page="3">3</button>
+                <button type="button" data-page="4">4</button>
+                <button type="button" data-page-next>Next</button>
+            </div>
+        </section>
+    </div>
+</section>
+{% endblock %}

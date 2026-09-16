@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+
+{% block title %}AI Assistant - MED FINDER{% endblock %}
+{% block body_class %}page-hero{% endblock %}
+
+{% block content %}
+<section class="app-shell chat-layout">
+    <aside class="chat-sidebar panel surface-only">
+        <button class="btn btn-gradient btn-block" type="button" data-new-chat>
+            <span class="icon icon-plus"></span>
+            New chat
+        </button>
+        <p class="eyebrow mt-lg">History</p>
+        <button class="history-item" type="button">
+            <span class="icon icon-message"></span>
+            <span><strong>Fever medicines for kids</strong><small>Today</small></span>
+        </button>
+        <button class="history-item" type="button">
+            <span class="icon icon-message"></span>
+            <span><strong>Generic alternatives</strong><small>Yesterday</small></span>
+        </button>
+        <button class="history-item" type="button">
+            <span class="icon icon-message"></span>
+            <span><strong>Understanding hypertension</strong><small>3 days ago</small></span>
+        </button>
+    </aside>
+
+    <section class="chat-panel panel surface-only">
+        <header class="chat-header">
+            <div class="brand-mark">
+                <span class="icon icon-sparkles"></span>
+            </div>
+            <div>
+                <h1>MED FINDER AI</h1>
+                <p><span class="status-dot"></span> Online</p>
+            </div>
+            <span class="medical-note">Not a substitute for medical advice</span>
+        </header>
+
+        <div class="chat-messages" id="chatMessages">
+            <div class="chat-row ai">
+                <span class="avatar-icon icon icon-bot"></span>
+                <div class="bubble">
+                    Hi. I am your MED FINDER assistant. Ask about medicines, doses, alternatives, or when to see a doctor.
+                </div>
+            </div>
+        </div>
+
+        <div class="suggestions" id="chatSuggestions">
+            <p class="eyebrow">Suggested questions</p>
+            <button type="button">What can I take for a mild headache?</button>
+            <button type="button">Is Dolo 650 safe during pregnancy?</button>
+            <button type="button">Cheaper alternative to Atorvastatin 10mg?</button>
+            <button type="button">Side effects of long-term Omeprazole?</button>
+        </div>
+
+        <form class="chat-form" id="assistantForm">
+            <input id="assistantInput" type="text" placeholder="Ask about medicines, doses, or alternatives..." autocomplete="off">
+            <button class="btn btn-gradient" type="submit">
+                <span class="icon icon-send"></span>
+                Send
+            </button>
+        </form>
+    </section>
+</section>
+{% endblock %}

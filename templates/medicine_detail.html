@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+
+{% block title %}Medicine Details - MED FINDER{% endblock %}
+{% block body_class %}page-hero{% endblock %}
+
+{% block content %}
+<main class="app-shell detail-page" data-medicine-id="{{ medicine_id }}">
+    <a class="back-link" href="/search"><span class="icon icon-arrow-left"></span> Back to search</a>
+
+    <div id="medicineDetail" class="detail-grid">
+        <section class="panel glass detail-visual">
+            <div class="medicine-art gradient-a">
+                <span class="icon icon-pill"></span>
+            </div>
+            <div class="skeleton-block short"></div>
+            <div class="skeleton-block"></div>
+        </section>
+        <section class="panel surface-only detail-copy">
+            <div class="skeleton-block title"></div>
+            <div class="skeleton-block"></div>
+            <div class="skeleton-block"></div>
+        </section>
+    </div>
+</main>
+{% endblock %}

@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(sqlite3 D:/MED_FINDER/database/medfinder.db \"SELECT COUNT\\(*\\) as total_records FROM medicines;\")",
+      "Bash(sqlite3 D:/MED_FINDER/database/medfinder.db \".schema medicines\")",
+      "Bash(git add *)",
+      "Bash(git commit -m 'Exclude large datasets and database from version control *)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "D:/MED_FINDER/venv/Scripts/headroom.EXE wrap selfheal --marker headroom-wrap-selfheal",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

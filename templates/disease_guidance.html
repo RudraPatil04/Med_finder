@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+
+{% block title %}Disease Guidance - MED FINDER{% endblock %}
+{% block body_class %}page-hero{% endblock %}
+
+{% block content %}
+<section class="app-shell disease-page">
+    <div class="page-heading">
+        <span class="pill-label"><span class="icon icon-stethoscope"></span> Disease Guidance</span>
+        <h1>Understand any <span>condition</span></h1>
+    </div>
+
+    <form class="disease-search glass" id="diseaseSearchForm">
+        <span class="search-icon icon icon-search"></span>
+        <input id="diseaseSearchInput" type="search" placeholder="Search diseases, symptoms..." autocomplete="off">
+    </form>
+
+    <div class="disease-layout">
+        <aside class="panel surface-only disease-list" id="diseaseList"></aside>
+        <section class="disease-detail" id="diseaseDetail"></section>
+    </div>
+</section>
+{% endblock %}
