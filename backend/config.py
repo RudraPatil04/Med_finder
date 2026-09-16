@@ -21,6 +21,14 @@ UPLOAD_DIR = ROOT_DIR / "uploads"
 MODEL_DIR = ROOT_DIR / "models"
 
 # -------------------------------------------------------
+# EXTERNAL APIs
+# -------------------------------------------------------
+
+RXNORM_API_BASE_URL = "https://rxnav.nlm.nih.gov/REST"
+
+RXNORM_API_TIMEOUT = 5  # seconds
+
+# -------------------------------------------------------
 # DATASETS
 # -------------------------------------------------------
 

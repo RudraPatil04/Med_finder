@@ -2,22 +2,41 @@
 ============================================================
 MED FINDER
 MEDICINE SERVICE
-Version : 1.0
+Version : 2.0
 
 Author : Naman
 ============================================================
 """
 
 from backend.database import execute_query
+from backend.services.external_api_service import search_rxnorm, save_api_medicine
 
 
 # ============================================================
 # Search Medicines
 # ============================================================
 
-def search_medicines(keyword, limit=20):
+def search_medicines(keyword, limit=20, enable_api_fallback=True):
     """
     Search medicines by medicine name or brand name.
+
+    Searches local database first. If results are insufficient
+    and API fallback is enabled, queries RxNorm API and saves
+    results to database.
+
+    Parameters
+    ----------
+    keyword : str
+        Search term
+    limit : int
+        Maximum results to return
+    enable_api_fallback : bool
+        Whether to query external API if local results are insufficient
+
+    Returns
+    -------
+    list
+        Medicine records matching search
     """
 
     query = """
@@ -31,18 +50,53 @@ def search_medicines(keyword, limit=20):
         composition,
         price,
         prescription_required,
-        image_url
+        image_url,
+        source
     FROM medicines
     WHERE
         medicine_name LIKE ?
         OR brand_name LIKE ?
-    ORDER BY medicine_name
+    ORDER BY
+        CASE
+            WHEN source = 'local' THEN 1
+            ELSE 2
+        END,
+        medicine_name
     LIMIT ?
     """
 
-    keyword = f"%{keyword}%"
+    keyword_pattern = f"%{keyword}%"
 
-    return execute_query(query, (keyword, keyword, limit))
+    local_results = execute_query(query, (keyword_pattern, keyword_pattern, limit))
+
+    # If we have enough results or API fallback is disabled, return
+    if len(local_results) >= 5 or not enable_api_fallback:
+        return local_results
+
+    # Try external API
+    try:
+        print(f"Local results insufficient ({len(local_results)}), querying RxNorm API...")
+
+        api_results = search_rxnorm(keyword, limit=10)
+
+        # Save API results to database
+        saved_count = 0
+        for medicine in api_results:
+            if save_api_medicine(medicine) > 0:
+                saved_count += 1
+
+        if saved_count > 0:
+            print(f"Saved {saved_count} medicines from RxNorm API")
+
+            # Re-query database to get combined results
+            all_results = execute_query(query, (keyword_pattern, keyword_pattern, limit))
+            return all_results
+
+    except Exception as e:
+        print(f"API fallback failed: {e}")
+
+    # Return whatever we found locally
+    return local_results
 
 
 # ============================================================

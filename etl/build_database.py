@@ -80,7 +80,9 @@ def build_database(df):
 
             prescription_required TEXT,
 
-            image_url TEXT
+            image_url TEXT,
+
+            source TEXT DEFAULT 'local'
 
         );
 
@@ -118,7 +120,9 @@ def build_database(df):
 
                 row.get("Is_Prescription_Required"),
 
-                row.get("Image_URL")
+                row.get("Image_URL"),
+
+                'local'
 
             )
 
@@ -150,11 +154,13 @@ def build_database(df):
 
             prescription_required,
 
-            image_url
+            image_url,
+
+            source
 
         )
 
-        VALUES (?,?,?,?,?,?,?,?,?)
+        VALUES (?,?,?,?,?,?,?,?,?,?)
 
         """,
 
