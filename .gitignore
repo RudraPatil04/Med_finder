@@ -18,6 +18,7 @@ datasets/*.xlsx
 # IDE
 .vscode/
 .idea/
+.serena/
 *.swp
 *.swo
 *~

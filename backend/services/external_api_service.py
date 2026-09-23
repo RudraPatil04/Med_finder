@@ -25,7 +25,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.append(str(ROOT_DIR))
 
 from backend.config import RXNORM_API_BASE_URL, RXNORM_API_TIMEOUT
-from backend.database import execute_non_query
+from backend.database import execute_non_query, execute_query
 from backend.services.pharmeasy_service import get_pharmeasy_price
 
 
@@ -201,6 +201,7 @@ def extract_dosage_form(name):
 def save_api_medicine(medicine):
     """
     Save medicine from API to local database.
+    Checks if medicine already exists before inserting.
 
     Parameters
     ----------
@@ -213,37 +214,52 @@ def save_api_medicine(medicine):
         Number of rows affected
     """
 
-    query = """
-    INSERT INTO medicines(
-        medicine_name,
-        brand_name,
-        strength,
-        dosage_form,
-        medicine_category,
-        composition,
-        price,
-        prescription_required,
-        image_url,
-        source
-    )
-    VALUES (?,?,?,?,?,?,?,?,?,?)
+    # Check if medicine already exists
+    check_query = """
+    SELECT id FROM medicines
+    WHERE medicine_name = ? AND source = 'api'
+    LIMIT 1
     """
 
-    params = (
-        medicine.get("medicine_name"),
-        medicine.get("brand_name"),
-        medicine.get("strength"),
-        medicine.get("dosage_form"),
-        medicine.get("medicine_category"),
-        medicine.get("composition"),
-        medicine.get("price"),
-        medicine.get("prescription_required"),
-        medicine.get("image_url"),
-        medicine.get("source", "api")
-    )
-
     try:
+        existing = execute_query(check_query, (medicine.get("medicine_name"),))
+
+        if existing:
+            print(f"Medicine '{medicine.get('medicine_name')}' already exists in database (id={existing[0]['id']})")
+            return 0
+
+        # Medicine doesn't exist, insert it
+        query = """
+        INSERT INTO medicines(
+            medicine_name,
+            brand_name,
+            strength,
+            dosage_form,
+            medicine_category,
+            composition,
+            price,
+            prescription_required,
+            image_url,
+            source
+        )
+        VALUES (?,?,?,?,?,?,?,?,?,?)
+        """
+
+        params = (
+            medicine.get("medicine_name"),
+            medicine.get("brand_name"),
+            medicine.get("strength"),
+            medicine.get("dosage_form"),
+            medicine.get("medicine_category"),
+            medicine.get("composition"),
+            medicine.get("price"),
+            medicine.get("prescription_required"),
+            medicine.get("image_url"),
+            medicine.get("source", "api")
+        )
+
         return execute_non_query(query, params)
+
     except Exception as e:
         print(f"Error saving API medicine to database: {e}")
         return 0
