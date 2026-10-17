@@ -1,10 +1,8 @@
 """
 ============================================================
 MED FINDER
-MEDICINE ROUTES
-Version : 1.0
-
-Author : Naman
+MEDICINE & PLATFORM ROUTES
+Version : 2.0
 ============================================================
 """
 
@@ -18,6 +16,10 @@ from backend.services.medicine_service import (
     search_by_composition,
     cheapest_medicines
 )
+from backend.disease_service import get_disease_by_id_or_name, get_all_diseases
+from backend.assistant_service import process_assistant_query
+from backend.ocr_service import parse_prescription_medicines
+from backend.recommendation_service import get_substitutes
 
 medicine_bp = Blueprint("medicine", __name__)
 
@@ -56,7 +58,6 @@ def medicine_details(medicine_id):
     medicine = get_medicine(medicine_id)
 
     if medicine is None:
-
         return jsonify({
             "success": False,
             "message": "Medicine not found."
@@ -66,6 +67,19 @@ def medicine_details(medicine_id):
         "success": True,
         "data": dict(medicine)
     })
+
+
+# ==========================================================
+# Generic / Cheaper Substitutes
+# ==========================================================
+
+@medicine_bp.route("/substitutes/<int:medicine_id>", methods=["GET"])
+def medicine_substitutes(medicine_id):
+
+    limit = request.args.get("limit", 5, type=int)
+    result = get_substitutes(medicine_id, limit=limit)
+
+    return jsonify(result)
 
 
 # ==========================================================
@@ -130,3 +144,77 @@ def cheapest():
         "count": len(medicines),
         "data": [dict(row) for row in medicines]
     })
+
+
+# ==========================================================
+# Disease Guidance API
+# ==========================================================
+
+@medicine_bp.route("/disease", methods=["GET"])
+def disease_guidance_api():
+
+    query = request.args.get("q", "").strip()
+
+    if not query:
+        return jsonify({
+            "success": True,
+            "data": get_disease_by_id_or_name(None),
+            "all": get_all_diseases()
+        })
+
+    disease = get_disease_by_id_or_name(query)
+
+    return jsonify({
+        "success": True,
+        "data": disease
+    })
+
+
+# ==========================================================
+# AI Health Assistant API
+# ==========================================================
+
+@medicine_bp.route("/assistant", methods=["POST"])
+def assistant_chat_api():
+
+    data = request.get_json(silent=True) or {}
+    user_message = data.get("message", "").strip()
+
+    if not user_message:
+        return jsonify({
+            "success": False,
+            "message": "Message is required."
+        }), 400
+
+    reply = process_assistant_query(user_message)
+
+    return jsonify({
+        "success": True,
+        "reply": reply
+    })
+
+
+# ==========================================================
+# Prescription OCR API
+# ==========================================================
+
+@medicine_bp.route("/ocr", methods=["POST"])
+def prescription_ocr_api():
+
+    if "file" not in request.files:
+        return jsonify({
+            "success": False,
+            "message": "No prescription file uploaded."
+        }), 400
+
+    file = request.files["file"]
+
+    if file.filename == "":
+        return jsonify({
+            "success": False,
+            "message": "Empty file."
+        }), 400
+
+    result = parse_prescription_medicines(file)
+
+    return jsonify(result)
