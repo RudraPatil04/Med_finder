@@ -532,11 +532,16 @@ p {
 .medicine-grid {
     margin-top: 30px;
     grid-template-columns: repeat(4, 1fr);
+    align-items: stretch;
+    gap: 18px;
 }
 
 .medicine-card {
     overflow: hidden;
     border-radius: var(--radius);
+    display: flex;
+    flex-direction: column;
+    height: 100%;
 }
 
 .medicine-visual,
@@ -583,6 +588,9 @@ p {
 
 .medicine-body {
     padding: 18px;
+    display: flex;
+    flex-direction: column;
+    flex: 1;
 }
 
 .medicine-body small {
@@ -607,9 +615,9 @@ p {
 
 .price-row {
     display: flex;
+    margin-top: auto;
     align-items: end;
     justify-content: space-between;
-    margin-top: 18px;
 }
 
 .price {
@@ -1874,9 +1882,10 @@ input[type="range"] {
    ======================================== */
 
 .medicine-card-wrapper {
-    display: flex;
-    flex-direction: column;
+    display: grid;
+    grid-template-rows: 1fr auto;
     gap: 12px;
+    height: 100%;
 }
 
 .btn-compare {
