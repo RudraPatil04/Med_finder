@@ -467,7 +467,8 @@
     function renderMedicineCard(item, index) {
         const m = normalizeMedicine(item);
         const gradient = gradients[(Number(m.id) + (index || 0)) % gradients.length];
-        return '<a class="medicine-card card-hover" href="/medicine/' + encodeURIComponent(m.id) + '">' +
+        return '<div class="medicine-card-wrapper">' +
+            '<a class="medicine-card card-hover" href="/medicine/' + encodeURIComponent(m.id) + '">' +
             '<div class="medicine-visual ' + gradient + '">' +
             (m.rx ? '<span class="rx-badge">Rx</span>' : '') +
             '<span class="form-badge">' + escapeHtml(m.form || "Med") + '</span>' +
@@ -478,7 +479,9 @@
             '<small>' + escapeHtml(m.manufacturer || m.category || "MED FINDER") + '</small>' +
             '<div class="medicine-meta"><span class="stars">Rating</span><strong>4.' + ((Number(m.id) % 5) + 3) + '</strong><span>| ' + escapeHtml(m.category || "Medicine") + '</span></div>' +
             '<div class="price-row"><div><div class="price">Rs. ' + escapeHtml(formatPrice(m.price)) + '</div><div class="mrp">Rs. ' + escapeHtml(formatPrice(m.mrp)) + '</div></div><span class="view-pill">View</span></div>' +
-            '</div></a>';
+            '</div></a>' +
+            '<button class="btn btn-outline btn-compare" type="button" data-compare-id="' + m.id + '" onclick="event.preventDefault(); showComparison(' + m.id + ', \'' + escapeHtml(m.name).replace(/'/g, "\\'") + '\')"><span class="icon icon-shuffle"></span> Compare Prices</button>' +
+            '</div>';
     }
 
     function renderMedicineRow(item, index) {
@@ -606,4 +609,128 @@
             }, wait);
         };
     }
+
+    // Price Comparison Feature
+    window.showComparison = async function(medicineId, medicineName) {
+        // Create modal if it doesn't exist
+        let modal = document.getElementById("comparisonModal");
+        if (!modal) {
+            modal = document.createElement("div");
+            modal.id = "comparisonModal";
+            modal.className = "comparison-modal";
+            modal.innerHTML = '<div class="modal-overlay" onclick="closeComparison()"></div>' +
+                '<div class="modal-content panel glass">' +
+                '<div class="modal-header">' +
+                '<h2><span class="icon icon-shuffle"></span> <span id="comparisonTitle">Price Comparison</span></h2>' +
+                '<button class="btn-close" onclick="closeComparison()" aria-label="Close"><span class="icon icon-x"></span></button>' +
+                '</div>' +
+                '<div class="modal-body" id="comparisonBody">Loading...</div>' +
+                '</div>';
+            document.body.appendChild(modal);
+        }
+
+        // Show modal
+        modal.classList.add("active");
+        document.body.style.overflow = "hidden";
+
+        // Update title
+        document.getElementById("comparisonTitle").innerHTML = 'Alternatives for <strong>' + escapeHtml(medicineName) + '</strong>';
+
+        // Fetch substitutes
+        const body = document.getElementById("comparisonBody");
+        body.innerHTML = '<div class="loading-state"><div class="spinner"></div><p>Finding cheaper alternatives...</p></div>';
+
+        const data = await fetchJson("/api/substitutes/" + encodeURIComponent(medicineId) + "?limit=10");
+
+        if (!data || !data.success || !data.substitutes || data.substitutes.length === 0) {
+            body.innerHTML = '<div class="empty-state">' +
+                '<span class="feature-icon"><span class="icon icon-package"></span></span>' +
+                '<h3>No alternatives found</h3>' +
+                '<p>We couldn\'t find cheaper substitutes with the same composition.</p>' +
+                '</div>';
+            return;
+        }
+
+        // Render comparison results
+        const original = data.original_medicine;
+        const substitutes = data.substitutes;
+        const maxSavings = data.max_savings_percent || 0;
+
+        body.innerHTML = '<div class="comparison-summary">' +
+            '<div class="summary-card success">' +
+            '<span class="icon icon-trending-down"></span>' +
+            '<div><strong>Save up to ' + maxSavings.toFixed(0) + '%</strong><small>Maximum savings available</small></div>' +
+            '</div>' +
+            '<div class="summary-card info">' +
+            '<span class="icon icon-package"></span>' +
+            '<div><strong>' + substitutes.length + ' alternatives</strong><small>Found with same composition</small></div>' +
+            '</div>' +
+            '</div>' +
+            '<div class="comparison-section">' +
+            '<h3>Original Medicine</h3>' +
+            '<div class="comparison-item original">' +
+            '<div class="comparison-header">' +
+            '<div><h4>' + escapeHtml(original.medicine_name) + '</h4>' +
+            '<p>' + escapeHtml(original.brand_name || original.composition || 'Standard composition') + '</p></div>' +
+            '<div class="comparison-price"><span class="price-large">Rs. ' + formatPrice(original.price) + '</span></div>' +
+            '</div>' +
+            '<div class="comparison-details">' +
+            '<span class="badge">' + escapeHtml(original.medicine_category || 'Medicine') + '</span>' +
+            '<span class="badge secondary">' + escapeHtml(original.dosage_form || 'Standard form') + '</span>' +
+            '<span class="badge">' + escapeHtml(original.strength || 'Standard strength') + '</span>' +
+            '</div>' +
+            '</div>' +
+            '</div>' +
+            '<div class="comparison-section">' +
+            '<h3>Cheaper Alternatives <span class="count-badge">' + substitutes.length + '</span></h3>' +
+            '<div class="substitutes-list">' +
+            substitutes.map(function(sub, idx) {
+                const savingsPercent = sub.savings_percent || 0;
+                const savingsAmount = sub.savings_amount || 0;
+                const savingsClass = savingsPercent > 50 ? 'high' : savingsPercent > 25 ? 'medium' : 'low';
+
+                return '<div class="comparison-item substitute">' +
+                    '<div class="comparison-header">' +
+                    '<div class="rank-badge">#' + (idx + 1) + '</div>' +
+                    '<div class="flex-grow">' +
+                    '<h4>' + escapeHtml(sub.medicine_name) + '</h4>' +
+                    '<p>' + escapeHtml(sub.brand_name || sub.composition || 'Same composition') + '</p>' +
+                    '</div>' +
+                    '<div class="comparison-price">' +
+                    '<span class="price-large">Rs. ' + formatPrice(sub.price) + '</span>' +
+                    (savingsPercent > 0 ? '<span class="savings-badge ' + savingsClass + '">Save ' + savingsPercent.toFixed(0) + '%</span>' : '') +
+                    '</div>' +
+                    '</div>' +
+                    '<div class="comparison-details">' +
+                    '<span class="badge">' + escapeHtml(sub.medicine_category || 'Medicine') + '</span>' +
+                    '<span class="badge secondary">' + escapeHtml(sub.dosage_form || 'Form') + '</span>' +
+                    '<span class="badge">' + escapeHtml(sub.strength || 'Strength') + '</span>' +
+                    (savingsAmount > 0 ? '<span class="savings-text">You save Rs. ' + formatPrice(savingsAmount) + '</span>' : '') +
+                    '</div>' +
+                    '<div class="comparison-actions">' +
+                    '<a href="/medicine/' + sub.id + '" class="btn btn-outline btn-sm">View Details</a>' +
+                    '</div>' +
+                    '</div>';
+            }).join('') +
+            '</div>' +
+            '</div>' +
+            '<div class="comparison-footer">' +
+            '<p class="disclaimer"><span class="icon icon-alert-circle"></span> Always consult your doctor or pharmacist before switching medicines. Ensure the composition and strength match your prescription.</p>' +
+            '</div>';
+    };
+
+    window.closeComparison = function() {
+        const modal = document.getElementById("comparisonModal");
+        if (modal) {
+            modal.classList.remove("active");
+            document.body.style.overflow = "";
+        }
+    };
+
+    // Close modal on Escape key
+    document.addEventListener("keydown", function(event) {
+        if (event.key === "Escape") {
+            closeComparison();
+        }
+    });
 })();
