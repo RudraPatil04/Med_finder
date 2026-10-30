@@ -17,7 +17,12 @@ Cleaned Pandas DataFrame
 ============================================================
 """
 
+import sys
+
 import pandas as pd
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 
 def clean_dataset(df):

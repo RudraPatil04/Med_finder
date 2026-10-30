@@ -23,7 +23,14 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.append(str(ROOT_DIR))
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 from backend.config import MEDICINE_DATABASE
+from backend.medicine_data import (
+    canonical_composition, extract_pack_size, extract_release_type,
+    make_product_key, normalize_medication_text, parse_composition,
+)
 
 
 # ============================================================
@@ -43,6 +50,9 @@ def build_database(df):
     conn = sqlite3.connect(MEDICINE_DATABASE)
 
     cursor = conn.cursor()
+
+    cursor.execute("DROP TABLE IF EXISTS medicine_ingredients")
+    cursor.execute("DROP TABLE IF EXISTS api_search_cache")
 
     # --------------------------------------------------------
     # Drop Existing Table
@@ -82,7 +92,29 @@ def build_database(df):
 
             image_url TEXT,
 
-            source TEXT DEFAULT 'local'
+            release_type TEXT,
+
+            pack_size TEXT,
+
+            composition_complete INTEGER NOT NULL DEFAULT 0,
+
+            price_source TEXT,
+
+            price_checked_at TEXT,
+
+            rxnorm_rxcui TEXT,
+
+            product_key TEXT,
+
+            source TEXT DEFAULT 'local',
+
+            api_source TEXT,
+
+            api_record_id TEXT,
+
+            api_fetched_at TEXT,
+
+            search_norm TEXT
 
         );
 
@@ -100,6 +132,20 @@ def build_database(df):
 
     for _, row in df.iterrows():
 
+        raw_composition = row.get("Composition")
+        ingredients = parse_composition(raw_composition)
+        composition = canonical_composition(raw_composition)
+        raw_price = row.get("Price")
+        price = None if str(raw_price).strip().lower() in {"", "nan", "<na>", "none"} else raw_price
+        name = row.get("Medicine_Name")
+        type_of_medicine = row.get("Type_of_Medicine")
+        product_name = row.get("Product_Name")
+        release_type = extract_release_type(name)
+        pack_size = extract_pack_size(type_of_medicine, product_name, name)
+        product_key = make_product_key(
+            name, row.get("Brand_Name"), row.get("Strength"), row.get("Dosage_Form"),
+            composition, release_type, pack_size,
+        )
         records.append(
 
             (
@@ -114,15 +160,39 @@ def build_database(df):
 
                 row.get("Medicine_Category"),
 
-                row.get("Composition"),
+                composition,
 
-                None if str(row.get("Price")) == "nan" else row.get("Price"),
+                price,
 
                 row.get("Is_Prescription_Required"),
 
                 row.get("Image_URL"),
 
-                'local'
+                release_type,
+
+                pack_size,
+
+                int(bool(ingredients)),
+
+                "Source dataset" if price is not None else None,
+
+                None,
+
+                None,
+
+                product_key,
+
+                'local',
+
+                None,
+
+                None,
+
+                None,
+
+                normalize_medication_text(
+                    f"{row.get('Medicine_Name') or ''} {row.get('Brand_Name') or ''}"
+                )
 
             )
 
@@ -156,11 +226,33 @@ def build_database(df):
 
             image_url,
 
-            source
+            release_type,
+
+            pack_size,
+
+            composition_complete,
+
+            price_source,
+
+            price_checked_at,
+
+            rxnorm_rxcui,
+
+            product_key,
+
+            source,
+
+            api_source,
+
+            api_record_id,
+
+            api_fetched_at,
+
+            search_norm
 
         )
 
-        VALUES (?,?,?,?,?,?,?,?,?,?)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 
         """,
 
@@ -169,6 +261,54 @@ def build_database(df):
     )
 
     conn.commit()
+
+    # Store ingredient names and strengths as rows so matching never relies on
+    # partial composition text or dose-only fragments.
+    ingredient_rows = []
+    for medicine_id, composition in cursor.execute("SELECT id, composition FROM medicines"):
+        for ingredient in parse_composition(composition):
+            ingredient_rows.append((
+                medicine_id,
+                ingredient["ingredient_name"],
+                ingredient["ingredient_name_norm"],
+                ingredient["ingredient_strength"],
+                ingredient["ingredient_strength_norm"],
+            ))
+    cursor.execute("""
+        CREATE TABLE medicine_ingredients (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            medicine_id INTEGER NOT NULL REFERENCES medicines(id) ON DELETE CASCADE,
+            ingredient_name TEXT NOT NULL,
+            ingredient_name_norm TEXT NOT NULL,
+            ingredient_strength TEXT NOT NULL,
+            ingredient_strength_norm TEXT NOT NULL
+        )
+    """)
+    cursor.executemany("""
+        INSERT INTO medicine_ingredients(
+            medicine_id, ingredient_name, ingredient_name_norm,
+            ingredient_strength, ingredient_strength_norm
+        ) VALUES (?,?,?,?,?)
+    """, ingredient_rows)
+    cursor.execute("CREATE INDEX idx_medicine_ingredients_med ON medicine_ingredients(medicine_id)")
+    cursor.execute("CREATE INDEX idx_medicine_ingredients_name ON medicine_ingredients(ingredient_name_norm)")
+    cursor.execute("""CREATE TABLE IF NOT EXISTS medicine_equivalence_evidence (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        reference_product_key TEXT NOT NULL,
+        candidate_product_key TEXT NOT NULL,
+        jurisdiction TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('pending', 'confirmed', 'rejected')),
+        evidence_type TEXT,
+        reference_product TEXT,
+        source_url TEXT NOT NULL,
+        verified_at TEXT,
+        notes TEXT,
+        UNIQUE(reference_product_key, candidate_product_key, jurisdiction)
+    )""")
+    cursor.execute("""CREATE INDEX IF NOT EXISTS idx_equivalence_lookup
+        ON medicine_equivalence_evidence(reference_product_key, candidate_product_key, jurisdiction, status)""")
+    conn.commit()
+    print(f"✓ Structured ingredients stored: {len(ingredient_rows):,}")
 
     print(f"✓ Records Inserted : {len(records):,}")
 
@@ -220,6 +360,11 @@ def build_database(df):
             """
 
         )
+
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_medicine_match
+        ON medicines(composition_complete, strength, dosage_form, release_type, pack_size, price)
+    """)
 
     conn.commit()
 

@@ -13,6 +13,7 @@ Author : Naman (with AI assistance)
 
 import requests
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 # ------------------------------------------------------------
@@ -26,14 +27,16 @@ if str(ROOT_DIR) not in sys.path:
 
 from backend.config import RXNORM_API_BASE_URL, RXNORM_API_TIMEOUT
 from backend.database import execute_non_query, execute_query
+from backend.services.drug_catalog_service import ensure_catalog_schema, search_text
 from backend.services.pharmeasy_service import get_pharmeasy_price
+from backend.medicine_data import extract_release_type, make_product_key
 
 
 # ============================================================
 # Search RxNorm API
 # ============================================================
 
-def search_rxnorm(query, limit=10, fetch_prices=True):
+def search_rxnorm(query, limit=10, fetch_prices=False):
     """
     Search RxNorm API for medicine information and optionally fetch prices.
 
@@ -91,6 +94,8 @@ def search_rxnorm(query, limit=10, fetch_prices=True):
 
                         if price_data:
                             medicine['price'] = price_data['price']
+                            medicine['price_source'] = 'PharmEasy search result (unverified pack)'
+                            medicine['price_checked_at'] = datetime.now(timezone.utc).isoformat()
                             print(f"  -> Price found: Rs. {price_data['price']}")
                         else:
                             print(f"  -> Price not found")
@@ -143,10 +148,17 @@ def parse_rxnorm_concept(concept):
             "strength": strength,
             "dosage_form": extract_dosage_form(name),
             "medicine_category": "External",
-            "composition": name,  # RxNorm doesn't provide detailed composition
+            # A display string is not a verified active-ingredient list.
+            "composition": None,
+            "composition_complete": 0,
             "price": None,
+            "price_source": None,
+            "price_checked_at": None,
             "prescription_required": "Unknown",
             "image_url": None,
+            "release_type": extract_release_type(name),
+            "pack_size": None,
+            "rxnorm_rxcui": concept.get("rxcui"),
             "source": "api"
         }
 
@@ -217,18 +229,27 @@ def save_api_medicine(medicine):
     # Check if medicine already exists
     check_query = """
     SELECT id FROM medicines
-    WHERE medicine_name = ? AND source = 'api'
+    WHERE source = 'api' AND (
+        (rxnorm_rxcui IS NOT NULL AND rxnorm_rxcui = ?)
+        OR lower(medicine_name) = lower(?)
+    )
     LIMIT 1
     """
 
     try:
-        existing = execute_query(check_query, (medicine.get("medicine_name"),))
+        ensure_catalog_schema()
+        existing = execute_query(check_query, (medicine.get("rxnorm_rxcui"), medicine.get("medicine_name")))
 
         if existing:
             print(f"Medicine '{medicine.get('medicine_name')}' already exists in database (id={existing[0]['id']})")
             return 0
 
         # Medicine doesn't exist, insert it
+        medicine["product_key"] = make_product_key(
+            medicine.get("medicine_name"), medicine.get("brand_name"),
+            medicine.get("strength"), medicine.get("dosage_form"),
+            medicine.get("composition"), medicine.get("release_type"), medicine.get("pack_size"),
+        )
         query = """
         INSERT INTO medicines(
             medicine_name,
@@ -238,11 +259,19 @@ def save_api_medicine(medicine):
             medicine_category,
             composition,
             price,
+            price_source,
+            price_checked_at,
             prescription_required,
             image_url,
-            source
+            release_type,
+            pack_size,
+            composition_complete,
+            rxnorm_rxcui,
+            product_key,
+            source,
+            search_norm
         )
-        VALUES (?,?,?,?,?,?,?,?,?,?)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """
 
         params = (
@@ -253,9 +282,17 @@ def save_api_medicine(medicine):
             medicine.get("medicine_category"),
             medicine.get("composition"),
             medicine.get("price"),
+            medicine.get("price_source"),
+            medicine.get("price_checked_at"),
             medicine.get("prescription_required"),
             medicine.get("image_url"),
-            medicine.get("source", "api")
+            medicine.get("release_type"),
+            medicine.get("pack_size"),
+            int(bool(medicine.get("composition_complete"))),
+            medicine.get("rxnorm_rxcui"),
+            medicine.get("product_key"),
+            medicine.get("source", "api"),
+            search_text(medicine.get("medicine_name"), medicine.get("brand_name"))
         )
 
         return execute_non_query(query, params)

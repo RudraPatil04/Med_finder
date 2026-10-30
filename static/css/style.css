@@ -2210,6 +2210,98 @@ input[type="range"] {
     font-size: 13px;
 }
 
+.cheaper-panel {
+    margin-bottom: 22px;
+    padding: 20px 22px;
+    border-radius: 20px;
+    border: 1px solid #a7f3d0;
+    background: linear-gradient(135deg, #ecfdf5 0%, #f0fdfa 100%);
+}
+
+.cheaper-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 14px;
+}
+
+.cheaper-head h2 {
+    font-size: 18px;
+    margin: 2px 0 4px;
+    color: var(--text);
+}
+
+.cheaper-head p {
+    margin: 0;
+    font-size: 13px;
+    color: var(--muted);
+}
+
+.cheaper-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 12px;
+}
+
+.cheaper-item {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 14px 16px;
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    transition: all 0.2s;
+}
+
+.cheaper-item:hover {
+    border-color: var(--primary);
+    box-shadow: 0 4px 18px rgba(15, 118, 110, 0.12);
+    transform: translateY(-1px);
+}
+
+.cheaper-copy {
+    min-width: 0;
+}
+
+.cheaper-copy strong {
+    display: block;
+    font-size: 14px;
+    color: var(--text);
+}
+
+.cheaper-copy small {
+    display: block;
+    margin-top: 2px;
+    font-size: 12px;
+    color: var(--muted);
+}
+
+.cheaper-price {
+    flex-shrink: 0;
+    text-align: right;
+}
+
+.cheaper-price span {
+    display: block;
+    font-size: 16px;
+    font-weight: 800;
+    color: var(--text);
+}
+
+.cheaper-price small {
+    display: block;
+    margin-top: 4px;
+    font-size: 11px;
+    color: var(--muted);
+}
+
+.cheaper-price .savings-badge {
+    font-size: 11px;
+}
+
 .comparison-footer {
     margin-top: 28px;
     padding-top: 20px;
@@ -2233,6 +2325,19 @@ input[type="range"] {
 .disclaimer .icon {
     flex-shrink: 0;
     margin-top: 1px;
+}
+
+.unverified-section {
+    margin-top: 28px;
+    padding-top: 24px;
+    border-top: 1px solid var(--border);
+}
+
+.verification-gaps {
+    margin: 12px 0 0;
+    color: #78350f;
+    font-size: 13px;
+    line-height: 1.5;
 }
 
 @media (max-width: 768px) {

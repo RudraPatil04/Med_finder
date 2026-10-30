@@ -20,8 +20,19 @@ from backend.disease_service import get_disease_by_id_or_name, get_all_diseases
 from backend.assistant_service import process_assistant_query
 from backend.ocr_service import parse_prescription_medicines
 from backend.recommendation_service import get_substitutes
+from backend.services.india_medicine_api import search_live_alternatives
+from backend.services.price_comparison_service import compare_current_prices
+from backend.services.price_enrichment_service import persist_reference_price
 
 medicine_bp = Blueprint("medicine", __name__)
+
+
+@medicine_bp.after_request
+def disable_api_cache(response):
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
 
 
 # ==========================================================
@@ -79,6 +90,29 @@ def medicine_substitutes(medicine_id):
     limit = request.args.get("limit", 5, type=int)
     result = get_substitutes(medicine_id, limit=limit)
 
+    return jsonify(result)
+
+
+@medicine_bp.route("/live-alternatives/<int:medicine_id>", methods=["GET"])
+def live_medicine_alternatives(medicine_id):
+    """Query the India drug information API at request time, without caching results."""
+    medicine = get_medicine(medicine_id)
+    if medicine is None:
+        return jsonify({"success": False, "message": "Medicine not found.", "matches": []}), 404
+    limit = request.args.get("limit", 10, type=int)
+    return jsonify(search_live_alternatives(medicine, limit=limit))
+
+
+@medicine_bp.route("/price-alternatives/<int:medicine_id>", methods=["GET"])
+def live_price_alternatives(medicine_id):
+    """Fetch current same-composition pharmacy listings and compare matching packs."""
+    medicine = get_medicine(medicine_id)
+    if medicine is None:
+        return jsonify({"success": False, "message": "Medicine not found.", "matches": []}), 404
+    limit = request.args.get("limit", 10, type=int)
+    result = compare_current_prices(medicine, limit=limit)
+    if result.get("reference") and float(medicine["price"] or 0) <= 0:
+        persist_reference_price(medicine_id, result["reference"], result.get("reference_pack"))
     return jsonify(result)
 
 
