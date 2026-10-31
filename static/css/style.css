@@ -22,6 +22,10 @@
     box-sizing: border-box;
 }
 
+[hidden] {
+    display: none !important;
+}
+
 html {
     scroll-behavior: smooth;
 }
@@ -1205,30 +1209,91 @@ input[type="range"] {
     border-top: 0;
 }
 
-.confidence {
-    width: 160px;
+.detected-item {
+    align-items: flex-start;
 }
 
-.confidence-label {
+.detected-actions {
     display: flex;
-    justify-content: space-between;
-    color: var(--muted);
-    font-size: 12px;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-left: auto;
 }
 
-.confidence-track {
-    overflow: hidden;
-    height: 8px;
-    margin-top: 5px;
+.match-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 3px 9px;
     border-radius: 999px;
-    background: #eef2f7;
+    font-size: 11px;
+    font-weight: 700;
+    white-space: nowrap;
 }
 
-.confidence-track span {
-    display: block;
-    height: 100%;
-    border-radius: inherit;
-    background: var(--emerald);
+.match-badge.exact {
+    color: #065f46;
+    background: #d1fae5;
+}
+
+.match-badge.partial {
+    color: var(--amber);
+    background: #fef3c7;
+}
+
+.match-badge.warning {
+    color: #b91c1c;
+    background: #fee2e2;
+}
+
+.ocr-source {
+    color: var(--muted);
+    font-style: italic;
+}
+
+.btn-sm {
+    min-height: 34px;
+    padding: 0 12px;
+    font-size: 12px;
+    border-radius: 10px;
+}
+
+.btn-quiet {
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--muted);
+}
+
+.btn-quiet:hover {
+    color: #b91c1c;
+    background: #fee2e2;
+}
+
+.muted-copy {
+    margin: -6px 0 6px;
+    color: var(--muted);
+    font-size: 13px;
+}
+
+.ocr-provider {
+    color: var(--muted);
+    font-weight: 500;
+}
+
+.ocr-text {
+    margin: 12px 0 0;
+    padding: 14px;
+    max-height: 320px;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: #f8fafc;
+    color: var(--muted);
+    font-size: 12.5px;
+    line-height: 1.6;
 }
 
 .disease-search {
@@ -1744,6 +1809,16 @@ input[type="range"] {
 }
 
 @media (max-width: 820px) {
+    .detected-list > div {
+        flex-wrap: wrap;
+    }
+
+    .detected-actions {
+        justify-content: flex-start;
+        width: 100%;
+        margin-left: 0;
+    }
+
     .nav-cta {
         display: none;
     }

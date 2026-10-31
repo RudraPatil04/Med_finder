@@ -26,10 +26,35 @@ The migration adds structured ingredient, release, package, and price provenance
 fields. It only marks composition complete when every ingredient and its
 strength can be parsed from the source record.
 
+## Prescription upload
+
+The scanner reads printed text from a PNG/JPG/PDF prescription, matches each
+line against the local catalog, and lists anything it could not match without
+guessing. Unreadable images return an explicit error instead of sample data, and
+uploads are deleted after processing.
+
+It needs Tesseract OCR plus the Python bindings:
+
+```powershell
+winget install --id UB-Mannheim.TesseractOCR -e
+python -m pip install -r requirements.txt
+```
+
+To use Google Cloud Vision instead for better handwriting support, set a key
+before starting the app (1,000 pages/month free, then $1.50 per 1,000 pages).
+Without a key, everything is read locally by Tesseract:
+
+```powershell
+$env:GOOGLE_VISION_API_KEY = "your-key"
+```
+
+With the key set, prescription images are sent to Google; without it they never
+leave the machine. Handwriting is still only best-effort, so review every row.
+
 ## Tests
 
 Run the focused offline tests with:
 
 ```powershell
-python -m unittest test_api_fallback_cache -v
+python -m unittest test_api_fallback_cache test_prescription_ocr -v
 ```

@@ -227,15 +227,216 @@ class RxNormFallbackCacheTests(unittest.TestCase):
         result = get_substitutes(ids[0])
         self.assertEqual(result["substitutes"], [])
         self.assertEqual(result["potential_match_count"], 1)
-        self.assertEqual(result["comparison_status"], "cheaper_same_composition")
-        cheaper = result["same_composition_alternatives"][0]
-        self.assertEqual(cheaper["medicine_name"], "Potential")
-        self.assertEqual(cheaper["savings_amount"], 1.0)
-        self.assertEqual(cheaper["savings_basis"], "per unit")
-        self.assertFalse(cheaper["savings_reliable"])
+        # Dataset prices are not current listings, so no cheaper/saving claim is made.
+        self.assertEqual(result["comparison_status"], "catalog_price_unverified")
+        self.assertFalse(result["reference_price_is_current"])
+        self.assertEqual(result["same_composition_alternatives"], [])
+        option = result["same_composition_options"][0]
+        self.assertEqual(option["medicine_name"], "Potential")
+        self.assertEqual(option["price_per_unit_value"], 4.0)
+        self.assertNotIn("savings_amount", option)
+        self.assertNotIn("savings_percent", option)
         self.assertEqual([item["medicine_name"] for item in result["unverified_matches"]], ["Potential"])
         self.assertIn("No product-level equivalence evidence found", result["unverified_matches"][0]["verification_gaps"])
         self.assertNotIn("savings_amount", result["unverified_matches"][0])
+
+    def test_cheaper_claim_requires_current_listing_prices_on_both_sides(self):
+        now = datetime.now(timezone.utc).isoformat()
+        connection = sqlite3.connect(self.db_path)
+        try:
+            ids = []
+            for name, price, checked in [
+                ("Target", 50, now),
+                ("Current cheaper", 40, now),
+                ("Stale cheaper", 30, None),
+            ]:
+                key = make_product_key(name, name, "500mg", "Capsule", "Amoxicillin (500mg)", "IR", "10 capsules")
+                medicine_id = connection.execute("""INSERT INTO medicines(
+                    medicine_name, brand_name, strength, dosage_form, composition, price,
+                    release_type, pack_size, composition_complete, price_source,
+                    price_checked_at, product_key
+                ) VALUES (?, ?, '500mg', 'Capsule', 'Amoxicillin (500mg)', ?, 'IR',
+                    '10 capsules', 1, 'fixture', ?, ?)""",
+                    (name, name, price, checked, key)).lastrowid
+                ids.append(medicine_id)
+                connection.execute("""INSERT INTO medicine_ingredients(
+                    medicine_id, ingredient_name, ingredient_name_norm, ingredient_strength,
+                    ingredient_strength_norm
+                ) VALUES (?, 'Amoxicillin', 'amoxicillin', '500mg', '500mg')""", (medicine_id,))
+            connection.commit()
+        finally:
+            connection.close()
+
+        result = get_substitutes(ids[0])
+        self.assertTrue(result["reference_price_is_current"])
+        self.assertEqual(result["comparison_status"], "cheaper_same_composition")
+        cheaper = result["same_composition_alternatives"]
+        self.assertEqual([item["medicine_name"] for item in cheaper], ["Current cheaper"])
+        self.assertEqual(cheaper[0]["savings_amount"], 1.0)
+        self.assertEqual(cheaper[0]["savings_basis"], "per unit")
+        self.assertTrue(cheaper[0]["savings_reliable"])
+        # The stale-priced product is still listed, but without a saving claim.
+        self.assertEqual([item["medicine_name"] for item in result["same_composition_options"]], ["Stale cheaper"])
+
+    def test_catalog_options_exclude_products_without_a_pack_size(self):
+        connection = sqlite3.connect(self.db_path)
+        try:
+            ids = []
+            for name, price, pack in [
+                ("Target", 50, None),
+                ("Known pack", 30, "10 capsules"),
+                ("Unknown pack", 5, None),
+            ]:
+                key = make_product_key(name, name, "500mg", "Capsule", "Amoxicillin (500mg)", "IR", pack)
+                medicine_id = connection.execute("""INSERT INTO medicines(
+                    medicine_name, brand_name, strength, dosage_form, composition, price,
+                    release_type, pack_size, composition_complete, product_key
+                ) VALUES (?, ?, '500mg', 'Capsule', 'Amoxicillin (500mg)', ?, 'IR', ?, 1, ?)""",
+                    (name, name, price, pack, key)).lastrowid
+                ids.append(medicine_id)
+                connection.execute("""INSERT INTO medicine_ingredients(
+                    medicine_id, ingredient_name, ingredient_name_norm, ingredient_strength,
+                    ingredient_strength_norm
+                ) VALUES (?, 'Amoxicillin', 'amoxicillin', '500mg', '500mg')""", (medicine_id,))
+            connection.commit()
+        finally:
+            connection.close()
+
+        result = get_substitutes(ids[0])
+        self.assertEqual(
+            [item["medicine_name"] for item in result["same_composition_options"]],
+            ["Known pack"],
+        )
+        self.assertIn("Unknown pack", [item["medicine_name"] for item in result["unverified_matches"]])
+
+    def test_generic_ingredient_search_finds_brand_named_products(self):
+        records = [
+            ("Voveran 50mg Tablet", "Voveran", "50mg", "Tablet", "Diclofenac Sodium (50mg)"),
+            ("Voveran Gel", "Voveran", "1%", "Gel", "Diclofenac Diethylamine (1%)"),
+            ("Diclofenac Plus Tablet", "Diclofenac Plus", "50mg", "Tablet",
+             "Diclofenac Sodium (50mg) + Paracetamol (325mg)"),
+            ("Crocin 500mg Tablet", "Crocin", "500mg", "Tablet", "Paracetamol (500mg)"),
+        ]
+        connection = sqlite3.connect(self.db_path)
+        try:
+            for name, brand, strength, form, composition in records:
+                medicine_id = connection.execute(
+                    """INSERT INTO medicines(
+                        medicine_name, brand_name, strength, dosage_form, composition,
+                        price, pack_size, composition_complete
+                    ) VALUES (?, ?, ?, ?, ?, 20, '10 tablets', 1)""",
+                    (name, brand, strength, form, composition),
+                ).lastrowid
+                for ingredient in parse_composition(composition):
+                    connection.execute(
+                        """INSERT INTO medicine_ingredients(
+                            medicine_id, ingredient_name, ingredient_name_norm,
+                            ingredient_strength, ingredient_strength_norm
+                        ) VALUES (?, ?, ?, ?, ?)""",
+                        (medicine_id, ingredient["ingredient_name"], ingredient["ingredient_name_norm"],
+                         ingredient["ingredient_strength"], ingredient["ingredient_strength_norm"]),
+                    )
+            connection.commit()
+        finally:
+            connection.close()
+
+        results = medicine_service.search_medicines("Diclofenac", limit=20, enable_api_fallback=False)
+        names = [item["medicine_name"] for item in results]
+        # Brand names that never mention the ingredient are found through the
+        # structured ingredient table, tablets are ranked before gels.
+        self.assertEqual(names[0], "Voveran 50mg Tablet")
+        self.assertIn("Voveran Gel", names)
+        # Combination products and unrelated ingredients stay out.
+        self.assertNotIn("Diclofenac Plus Tablet", names)
+        self.assertNotIn("Crocin 500mg Tablet", names)
+
+    def test_generic_search_with_strength_excludes_other_strengths(self):
+        records = [
+            ("Glucomet 500mg Tablet", "Glucomet", "500mg", "Tablet", "Metformin (500mg)"),
+            ("Glucomet 1000mg Tablet", "Glucomet", "1000mg", "Tablet", "Metformin (1000mg)"),
+            ("Metformin 500mg Tablet", "Metformin", "500mg", "Tablet", "Metformin (500mg)"),
+        ]
+        connection = sqlite3.connect(self.db_path)
+        try:
+            for name, brand, strength, form, composition in records:
+                medicine_id = connection.execute(
+                    """INSERT INTO medicines(
+                        medicine_name, brand_name, strength, dosage_form, composition,
+                        price, pack_size, composition_complete
+                    ) VALUES (?, ?, ?, ?, ?, 20, '10 tablets', 1)""",
+                    (name, brand, strength, form, composition),
+                ).lastrowid
+                for ingredient in parse_composition(composition):
+                    connection.execute(
+                        """INSERT INTO medicine_ingredients(
+                            medicine_id, ingredient_name, ingredient_name_norm,
+                            ingredient_strength, ingredient_strength_norm
+                        ) VALUES (?, ?, ?, ?, ?)""",
+                        (medicine_id, ingredient["ingredient_name"], ingredient["ingredient_name_norm"],
+                         ingredient["ingredient_strength"], ingredient["ingredient_strength_norm"]),
+                    )
+            connection.commit()
+        finally:
+            connection.close()
+
+        results = medicine_service.search_medicines("Metformin 500", limit=20, enable_api_fallback=False)
+        names = [item["medicine_name"] for item in results]
+        self.assertIn("Metformin 500mg Tablet", names)
+        self.assertIn("Glucomet 500mg Tablet", names)
+        self.assertNotIn("Glucomet 1000mg Tablet", names)
+
+    def test_duplicate_search_rows_are_collapsed_to_the_cheapest_copy(self):
+        connection = sqlite3.connect(self.db_path)
+        try:
+            for price, pack in ((25, "10 tablets"), (20, "15 tablets")):
+                connection.execute(
+                    """INSERT INTO medicines(
+                        medicine_name, brand_name, strength, dosage_form, composition, price,
+                        pack_size, composition_complete
+                    ) VALUES ('Duplicet 500mg Tablet', 'Duplicet', '500mg', 'Tablet',
+                        'Paracetamol (500mg)', ?, ?, 1)""",
+                    (price, pack),
+                )
+            connection.commit()
+        finally:
+            connection.close()
+
+        results = medicine_service.search_medicines("Duplicet", limit=20, enable_api_fallback=False)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["price"], 20)
+
+    def test_missing_pack_sizes_are_explained_instead_of_implying_a_comparison(self):
+        connection = sqlite3.connect(self.db_path)
+        try:
+            ids = []
+            for name, price in [("Reference Patch", 180), ("Patch A", 191), ("Patch B", 98)]:
+                key = make_product_key(
+                    name, name, "100mg", "Patch", "Diclofenac Diethylamine (100mg)", None, None
+                )
+                medicine_id = connection.execute(
+                    """INSERT INTO medicines(
+                        medicine_name, brand_name, strength, dosage_form, composition, price,
+                        release_type, pack_size, composition_complete, product_key
+                    ) VALUES (?, ?, '100mg', 'Patch', 'Diclofenac Diethylamine (100mg)', ?,
+                        NULL, NULL, 1, ?)""",
+                    (name, name, price, key),
+                ).lastrowid
+                ids.append(medicine_id)
+                connection.execute(
+                    """INSERT INTO medicine_ingredients(
+                        medicine_id, ingredient_name, ingredient_name_norm,
+                        ingredient_strength, ingredient_strength_norm
+                    ) VALUES (?, 'Diclofenac Diethylamine', 'diclofenacdiethylamine', '100mg', '100mg')""",
+                    (medicine_id,),
+                )
+            connection.commit()
+        finally:
+            connection.close()
+
+        result = get_substitutes(ids[0])
+        self.assertEqual(result["comparison_status"], "no_verified_alternatives")
+        self.assertEqual(result["same_composition_options"], [])
+        self.assertIn("none records a pack size", result["message"])
 
     def test_incomplete_janumet_composition_never_matches_aciflam_by_dose_fragment(self):
         connection = sqlite3.connect(self.db_path)

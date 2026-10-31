@@ -8,7 +8,7 @@
     <div class="page-heading">
         <span class="pill-label"><span class="icon icon-scan"></span> Prescription OCR</span>
         <h1>Scan your <span>prescription</span></h1>
-        <p>Drop a clear photo or PDF and review extracted medicine information in a clean, structured workflow.</p>
+        <p>Upload a printed prescription and review the medicines matched to the catalog. Handwriting is often misread, so always check the printout below.</p>
     </div>
 
     <div class="scanner-layout">
@@ -37,10 +37,10 @@
         <aside class="panel surface-only how-it-works">
             <h2><span class="icon icon-sparkles"></span> How it works</h2>
             <ol>
-                <li><span>1</span>Upload a clear photo or PDF of your prescription.</li>
-                <li><span>2</span>The existing OCR backend reads and structures the results.</li>
-                <li><span>3</span>Medicines are matched against your MED FINDER database.</li>
-                <li><span>4</span>You review dosage, alternatives, and price comparison.</li>
+                <li><span>1</span>Upload a clear photo or text PDF of your prescription.</li>
+                <li><span>2</span>{% if cloud_ocr %}The image is sent to Google Cloud Vision for reading; the uploaded file is deleted from this server right after.{% else %}OCR reads the printed text on this machine; the file is deleted right after.{% endif %}</li>
+                <li><span>3</span>Printed names and strengths are matched against your MED FINDER database.</li>
+                <li><span>4</span>You review each match, remove wrong ones, and open the medicine record.</li>
             </ol>
         </aside>
     </div>
@@ -48,6 +48,19 @@
     <section class="detected-panel panel surface-only" id="detectedPanel" hidden>
         <h2>Detected medicines</h2>
         <div id="detectedList" class="detected-list"></div>
+    </section>
+
+    <section class="detected-panel panel surface-only" id="unmatchedPanel" hidden>
+        <h2>Read but not matched</h2>
+        <p class="muted-copy">These lines were read from the image, but no catalog record matched them confidently.</p>
+        <div id="unmatchedList" class="detected-list"></div>
+    </section>
+
+    <section class="detected-panel panel surface-only" id="ocrTextPanel" hidden>
+        <details>
+            <summary>Extracted text<span id="ocrProvider" class="ocr-provider"></span></summary>
+            <pre id="ocrText" class="ocr-text"></pre>
+        </details>
     </section>
 </section>
 {% endblock %}

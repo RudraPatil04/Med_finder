@@ -3,6 +3,7 @@
 import re
 
 from backend.database import execute_query
+from backend.medicine_data import normalize_medication_text
 from backend.services.drug_catalog_service import enrich_medicine_composition
 from backend.services.price_enrichment_service import enrich_medicine_price
 
@@ -42,6 +43,30 @@ def _price_per_unit(price, pack_size):
     if not quantity or price <= 0:
         return None
     return price / quantity[0], quantity[1]
+
+
+def _catalog_duplicate_key(item):
+    return tuple(
+        normalize_medication_text(item.get(field))
+        for field in ("medicine_name", "brand_name", "strength", "dosage_form", "pack_size", "release_type")
+    )
+
+
+def _dedupe_catalog_rows(items):
+    """Collapse duplicate listings, keeping the cheapest row for each product."""
+    by_product = {}
+    for item in items:
+        key = item.get("product_key") or _catalog_duplicate_key(item)
+        current = by_product.get(key)
+        if current is None or float(item.get("price") or 0) < float(current.get("price") or 0):
+            by_product[key] = item
+    by_listing = {}
+    for item in by_product.values():
+        key = _catalog_duplicate_key(item)
+        current = by_listing.get(key)
+        if current is None or float(item.get("price") or 0) < float(current.get("price") or 0):
+            by_listing[key] = item
+    return list(by_listing.values())
 
 
 def _candidate_rows(medicine, signature, target_id, require_release_match=False,
@@ -141,83 +166,73 @@ def get_substitutes(medicine_id, limit=5):
     )
     potential_count = len(potential_matches)
 
-    # Same active ingredients, strength, form and release type, ranked by the
-    # cheaper price per tablet/ml so different pack sizes can be compared.
-    same_content = []
+    # Same active ingredients, strength, form and release type. A saving is only
+    # claimed when the reference and the candidate both have a current listing
+    # price; otherwise the products are shown as catalog options with unverified
+    # prices, ranked by price per unit.
+    reference_has_price = float(medicine.get("price") or 0) > 0
+    reference_price_current = reference_has_price and _fresh_price(medicine.get("price_checked_at"))
     reference_unit = _price_per_unit(medicine.get("price"), medicine.get("pack_size"))
+    reference_pack = str(medicine.get("pack_size") or "").strip().casefold()
+
+    cheaper_same_content = []
+    catalog_options = []
     if potential_matchable:
         reference_release = str(medicine.get("release_type") or "").casefold()
-        reference_pack = str(medicine.get("pack_size") or "").casefold()
         for item in _candidate_rows(medicine, signature, medicine_id, require_pack_match=False):
             price = float(item.get("price") or 0)
             if price <= 0:
                 continue
             if str(item.get("release_type") or "").casefold() != reference_release:
                 continue
+            candidate_unit = _price_per_unit(price, item.get("pack_size"))
+            if not candidate_unit:
+                # A price without a pack size cannot be normalized per unit or pack.
+                continue
+            item["price_per_unit_value"] = round(candidate_unit[0], 4)
+            item["price_is_current"] = _fresh_price(item.get("price_checked_at"))
+            item["match_classification"] = "Same active ingredients and strength - not verified as interchangeable"
+
             savings = None
             amount = 0.0
             basis = None
-            candidate_unit = _price_per_unit(price, item.get("pack_size"))
-            if reference_unit and candidate_unit and candidate_unit[1] == reference_unit[1]:
+            both_current = reference_price_current and item["price_is_current"]
+            if both_current and reference_unit and candidate_unit[1] == reference_unit[1]:
                 if candidate_unit[0] < reference_unit[0]:
                     amount = round(reference_unit[0] - candidate_unit[0], 4)
                     savings = round(amount / reference_unit[0] * 100, 1)
                     basis = "per unit"
-                    item["price_per_unit_value"] = round(candidate_unit[0], 4)
                     item["reference_price_per_unit"] = round(reference_unit[0], 4)
-            elif str(item.get("pack_size") or "").casefold() == reference_pack:
+            elif both_current and reference_pack and str(item.get("pack_size") or "").strip().casefold() == reference_pack:
                 original_price = float(medicine.get("price") or 0)
                 if original_price > price:
                     amount = round(original_price - price, 2)
                     savings = round(amount / original_price * 100, 1)
                     basis = "per pack"
+
             if savings is None:
+                catalog_options.append(item)
                 continue
             item["savings_amount"] = amount
             item["savings_percent"] = savings
             item["savings_basis"] = basis
-            item["price_is_current"] = _fresh_price(item.get("price_checked_at"))
-            item["savings_reliable"] = bool(
-                item["price_is_current"] and _fresh_price(medicine.get("price_checked_at"))
-            )
-            item["match_classification"] = "Same active ingredients and strength - not verified as interchangeable"
-            same_content.append(item)
+            item["savings_reliable"] = True
+            cheaper_same_content.append(item)
 
-        unique_same = {}
-        for item in same_content:
-            key = item.get("product_key") or f"row:{item['id']}"
-            if key not in unique_same or float(item["price"]) < float(unique_same[key]["price"]):
-                unique_same[key] = item
-        same_content = sorted(unique_same.values(), key=lambda item: (
-            item.get("price_per_unit_value", float(item.get("price") or 0)),
-            float(item.get("price") or 0),
-        ))
-
-    # A record imported from the live catalog has no price, so a cheaper-than-
-    # reference claim is impossible. Still expose the cheapest catalog products
-    # with the same recorded ingredients, strength, form and release.
-    reference_has_price = float(medicine.get("price") or 0) > 0
-    price_ranked = []
-    if potential_matchable and not reference_has_price:
-        reference_release = str(medicine.get("release_type") or "").casefold()
-        unique_options = {}
-        for item in _candidate_rows(medicine, signature, medicine_id, require_pack_match=False):
-            price = float(item.get("price") or 0)
-            if price <= 0:
-                continue
-            if str(item.get("release_type") or "").casefold() != reference_release:
-                continue
-            unit = _price_per_unit(price, item.get("pack_size"))
-            if unit:
-                item["price_per_unit_value"] = round(unit[0], 4)
-            item["match_classification"] = "Same active ingredients and strength - not verified as interchangeable"
-            key = item.get("product_key") or f"row:{item['id']}"
-            if key not in unique_options or price < float(unique_options[key]["price"]):
-                unique_options[key] = item
-        price_ranked = sorted(unique_options.values(), key=lambda item: (
-            item.get("price_per_unit_value", float(item.get("price") or 0)),
-            float(item.get("price") or 0),
-        ))
+        cheaper_same_content = sorted(
+            _dedupe_catalog_rows(cheaper_same_content),
+            key=lambda item: (
+                item.get("price_per_unit_value") or float(item.get("price") or 0),
+                float(item.get("price") or 0),
+            ),
+        )
+        catalog_options = sorted(
+            _dedupe_catalog_rows(catalog_options),
+            key=lambda item: (
+                item.get("price_per_unit_value") or float(item.get("price") or 0),
+                float(item.get("price") or 0),
+            ),
+        )
 
     if matchable:
         if _fresh_price(medicine.get("price_checked_at")) and medicine.get("price_source"):
@@ -267,32 +282,58 @@ def get_substitutes(medicine_id, limit=5):
     best = confirmed[0] if confirmed else None
 
     confirmed_ids = {str(item.get("id")) for item in confirmed}
-    same_content = [item for item in same_content if str(item.get("id")) not in confirmed_ids]
+    cheaper_same_content = [item for item in cheaper_same_content if str(item.get("id")) not in confirmed_ids]
 
     if confirmed:
         status = "verified_alternatives"
         message = "Product-specific equivalence evidence and recent comparable prices are available."
-    elif same_content:
+    elif cheaper_same_content:
         status = "cheaper_same_composition"
         message = (
-            f"{len(same_content)} cheaper products with the same recorded ingredients and strength were found. "
-            "They are catalog matches, not verified therapeutic equivalents."
+            f"{len(cheaper_same_content)} products with the same recorded ingredients and strength have a current "
+            "listing price below this product. They are catalog matches, not verified therapeutic equivalents."
         )
     elif not potential_matchable:
         status = "insufficient_product_data"
         message = "The medicine lacks complete ingredient, strength, form, release, pack, or product identity data."
-    elif price_ranked:
+    elif catalog_options and not reference_has_price:
         status = "reference_price_unknown"
         message = (
             "This product has no recorded price, so a cheaper-than-reference comparison cannot be made. "
-            f"{len(price_ranked)} catalog products with the same recorded ingredients and strength are listed by price below."
+            f"{len(catalog_options)} catalog products with the same recorded ingredients and strength are listed by price below."
+        )
+    elif catalog_options and not reference_price_current:
+        status = "catalog_price_unverified"
+        message = (
+            "The recorded price for this product is not a current listing, so no saving can be claimed. "
+            f"{len(catalog_options)} same-composition catalog products are listed by their unverified catalog prices below."
+        )
+    elif catalog_options and not reference_unit:
+        status = "reference_pack_unknown"
+        message = (
+            "This product's pack size is not recorded, so a per-unit saving cannot be confirmed. "
+            f"{len(catalog_options)} same-composition catalog products are listed by their catalog prices below."
+        )
+    elif catalog_options:
+        status = "catalog_price_unverified"
+        message = (
+            "No same-composition product with a current listing price is cheaper than this product. "
+            f"{len(catalog_options)} catalog products are listed by their unverified catalog prices below."
         )
     elif potential_count:
+        priced_matches = [item for item in potential_matches if float(item.get("price") or 0) > 0]
         status = "no_verified_alternatives"
-        message = (
-            f"{potential_count} same-ingredient products were found, but none had a verifiable lower "
-            "comparable price. Catalog matches are listed below for review; they are not confirmed as interchangeable."
-        )
+        if priced_matches and all(not item.get("pack_size") for item in priced_matches):
+            message = (
+                f"{len(priced_matches)} same-ingredient products were found, but none records a pack size, "
+                "so a per-unit price comparison cannot be made. They are listed below for review; "
+                "they are not confirmed as interchangeable."
+            )
+        else:
+            message = (
+                f"{potential_count} same-ingredient products were found, but none had a verifiable lower "
+                "comparable price. Catalog matches are listed below for review; they are not confirmed as interchangeable."
+            )
     elif not matchable:
         status = "no_verified_alternatives"
         message = "Release characteristics are not verified, so no therapeutic equivalent can be confirmed."
@@ -306,14 +347,15 @@ def get_substitutes(medicine_id, limit=5):
         "count": len(confirmed),
         "potential_match_count": potential_count,
         "unverified_matches": unverified_matches,
-        "same_composition_alternatives": same_content[:max(0, min(limit, 20))],
-        "same_composition_count": len(same_content),
-        "same_composition_options": price_ranked[:max(0, min(limit, 20))],
-        "same_composition_option_count": len(price_ranked),
+        "same_composition_alternatives": cheaper_same_content[:max(0, min(limit, 20))],
+        "same_composition_count": len(cheaper_same_content),
+        "same_composition_options": catalog_options[:max(0, min(limit, 20))],
+        "same_composition_option_count": len(catalog_options),
         "reference_price_available": reference_has_price,
+        "reference_price_is_current": reference_price_current,
         "max_savings_percent": max(
             [item["savings_percent"] for item in confirmed]
-            + [item["savings_percent"] for item in same_content[:max(0, min(limit, 20))]]
+            + [item["savings_percent"] for item in cheaper_same_content[:max(0, min(limit, 20))]]
             or [0]
         ),
         "max_savings_amount": best["savings_amount"] if best else 0.0,

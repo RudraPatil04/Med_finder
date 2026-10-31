@@ -7,6 +7,7 @@ Author : Naman (with AI assistance)
 ============================================================
 """
 
+import os
 import sys
 from pathlib import Path
 from flask import Flask, jsonify, render_template, request
@@ -70,7 +71,10 @@ def medicine_detail_page(medicine_id):
 @app.route("/scan")
 def scanner_page():
     """Render prescription and medicine label OCR scanner."""
-    return render_template("scan_medicine.html")
+    return render_template(
+        "scan_medicine.html",
+        cloud_ocr=bool(os.environ.get("GOOGLE_VISION_API_KEY", "").strip()),
+    )
 
 
 @app.route("/disease")

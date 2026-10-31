@@ -52,15 +52,16 @@ def execute_query(query, params=()):
 
     conn = get_connection()
 
-    cursor = conn.cursor()
+    try:
+        cursor = conn.cursor()
 
-    cursor.execute(query, params)
+        cursor.execute(query, params)
 
-    rows = cursor.fetchall()
+        rows = cursor.fetchall()
 
-    conn.close()
-
-    return rows
+        return rows
+    finally:
+        conn.close()
 
 
 # ============================================================
@@ -74,17 +75,16 @@ def execute_non_query(query, params=()):
 
     conn = get_connection()
 
-    cursor = conn.cursor()
+    try:
+        cursor = conn.cursor()
 
-    cursor.execute(query, params)
+        cursor.execute(query, params)
 
-    conn.commit()
+        conn.commit()
 
-    affected = cursor.rowcount
-
-    conn.close()
-
-    return affected
+        return cursor.rowcount
+    finally:
+        conn.close()
 
 
 # ============================================================

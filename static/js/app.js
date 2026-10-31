@@ -231,15 +231,26 @@
         if (!cheaper.length && !options.length) return;
 
         const priceKnown = cheaper.length > 0;
+        const referencePriceMissing = !data.reference_price_available;
+        const referencePriceCurrent = Boolean(data.reference_price_is_current);
+        const eyebrow = priceKnown
+            ? 'Save on the same content'
+            : referencePriceMissing
+                ? 'No recorded price for this medicine'
+                : referencePriceCurrent ? 'No cheaper current listing found' : 'Current price not confirmed';
+        const blurb = priceKnown
+            ? 'Same recorded ingredients and strength, with current listing prices on both sides. These are catalog matches, not verified as therapeutically interchangeable.'
+            : referencePriceMissing
+                ? 'This medicine has no recorded price, so these are the cheapest catalog products with the same recorded ingredients, strength and form. Their prices are unverified; confirm with a pharmacist.'
+                : referencePriceCurrent
+                    ? 'This price is a current listing, but no same-composition product with a current listing price is cheaper. The options below carry old, unverified catalog prices, so no saving is claimed.'
+                    : 'The price recorded for this medicine is an old catalog price, not a confirmed current listing, so no saving is claimed. These products share the recorded ingredients, strength and form; their catalog prices are unverified and they are not verified interchangeable.';
         const items = priceKnown ? cheaper : options;
         panel.innerHTML = '<div class="cheaper-head">' +
-            '<div><p class="eyebrow">' + (priceKnown ? 'Save on the same content' : 'No recorded price for this medicine') + '</p>' +
-            '<h2>' + (priceKnown ? 'Cheaper options for ' : 'Lowest-priced options with the same content as ') +
+            '<div><p class="eyebrow">' + eyebrow + '</p>' +
+            '<h2>' + (priceKnown ? 'Cheaper options for ' : 'Same-composition catalog options for ') +
             escapeHtml(medicine.medicine_name || medicine.name || 'this medicine') + '</h2>' +
-            '<p>' + (priceKnown
-                ? 'Same recorded ingredients and strength. Catalog prices may be outdated and these are not verified as therapeutically interchangeable.'
-                : 'This medicine has no recorded price, so these are the cheapest catalog products with the same recorded ingredients, strength and form. Confirm with a pharmacist; they are not verified interchangeable.') +
-            '</p></div>' +
+            '<p>' + blurb + '</p></div>' +
             '<span class="count-badge">' + items.length + '</span>' +
             '</div>' +
             '<div class="cheaper-list">' + items.map(function (item) {
@@ -253,7 +264,7 @@
                     '<div class="cheaper-price"><span>Rs. ' + formatPrice(item.price) + '</span>' +
                     (priceKnown && item.savings_reliable
                         ? '<small class="savings-badge ' + savingsClass(item.savings_percent) + '">Save ' + Number(item.savings_percent).toFixed(0) + '%</small>'
-                        : '<small>' + (priceKnown ? 'Lower catalog price' : 'Catalog price') + '</small>') +
+                        : '<small>Catalog price (unverified)</small>') +
                     (unitLabel ? '<small>' + escapeHtml(unitLabel) + '</small>' : '') +
                     '</div></a>';
             }).join('') + '</div>';
@@ -332,7 +343,18 @@
         const previewFrame = document.getElementById("previewFrame");
         const detectedPanel = document.getElementById("detectedPanel");
         const detectedList = document.getElementById("detectedList");
+        const unmatchedPanel = document.getElementById("unmatchedPanel");
+        const unmatchedList = document.getElementById("unmatchedList");
+        const ocrTextPanel = document.getElementById("ocrTextPanel");
+        const ocrText = document.getElementById("ocrText");
+        const ocrProvider = document.getElementById("ocrProvider");
+        const ocrProviderLabels = {
+            "google-vision": "Google Vision",
+            "tesseract": "Tesseract",
+            "pdf-text-layer": "PDF text layer"
+        };
         const reset = document.querySelector("[data-scan-reset]");
+        let scanRequest = 0;
 
         ["dragover", "dragleave", "drop"].forEach(function (name) {
             uploadZone.addEventListener(name, function (event) {
@@ -349,48 +371,95 @@
         });
 
         reset.addEventListener("click", function () {
+            scanRequest += 1;
             input.value = "";
             dropCard.hidden = false;
             preview.hidden = true;
             detectedPanel.hidden = true;
+            unmatchedPanel.hidden = true;
+            ocrTextPanel.hidden = true;
             reset.hidden = true;
+            detectedList.innerHTML = "";
+            unmatchedList.innerHTML = "";
+            ocrText.textContent = "";
+            ocrProvider.textContent = "";
             previewFrame.innerHTML = '<span class="icon icon-file"></span>';
         });
 
+        detectedList.addEventListener("click", function (event) {
+            const remove = event.target.closest("[data-remove-detected]");
+            if (!remove) return;
+            const row = remove.closest("[data-detected]");
+            if (row) row.remove();
+            if (!detectedList.querySelector("[data-detected]")) {
+                detectedList.innerHTML = emptyState("No medicines left", "Scan another prescription or search manually.");
+            }
+        });
+
+        function showExtractedText(text, provider) {
+            if (!text) {
+                ocrTextPanel.hidden = true;
+                return;
+            }
+            const label = String(provider || "")
+                .split("+")
+                .map(function (name) { return ocrProviderLabels[name] || name; })
+                .filter(Boolean)
+                .join(" + ");
+            ocrText.textContent = text;
+            ocrProvider.textContent = label ? " · " + label : "";
+            ocrTextPanel.hidden = false;
+        }
+
         async function startScan(file) {
+            const requestId = ++scanRequest;
             dropCard.hidden = true;
             preview.hidden = false;
             detectedPanel.hidden = true;
+            unmatchedPanel.hidden = true;
+            ocrTextPanel.hidden = true;
             reset.hidden = true;
             previewFrame.classList.add("scanning");
             setText("scanStateLabel", "Scanning...");
             setText("scanTitle", "Reading your prescription");
-            setText("scanCopy", "Calling the existing OCR backend.");
+            setText("scanCopy", "Reading the prescription and matching the catalog.");
 
             if (file.type.startsWith("image/")) {
                 const url = URL.createObjectURL(file);
                 previewFrame.innerHTML = '<img src="' + url + '" alt="Prescription preview">';
+            } else {
+                previewFrame.innerHTML = '<span class="icon icon-file"></span><small>' + escapeHtml(file.name) + '</small>';
             }
 
             const formData = new FormData();
             formData.append("file", file);
             const response = await fetchJson("/api/ocr", { method: "POST", body: formData });
+            if (requestId !== scanRequest) return;
 
             previewFrame.classList.remove("scanning");
             reset.hidden = false;
             if (!response || response.success === false) {
-                setText("scanStateLabel", "OCR unavailable");
-                setText("scanTitle", "OCR service is not available");
-                setText("scanCopy", "The prescription upload was received, but automated extraction is not active in this build.");
+                setText("scanStateLabel", "Not readable");
+                setText("scanTitle", "Could not read this prescription");
+                setText("scanCopy", (response && response.message) || "The OCR service did not respond. Try a clearer image or search manually.");
+                showExtractedText(response && response.text, response && response.provider);
                 return;
             }
 
             setText("scanStateLabel", "Scan complete");
-            setText("scanTitle", "Medicines detected");
-            setText("scanCopy", "Review the detected items below.");
-            const items = response.data || response.medicines || [];
-            detectedList.innerHTML = items.map(renderDetectedMedicine).join("") || emptyState("No medicines detected", "Try a clearer image.");
+            setText("scanTitle", response.count ? "Medicines detected" : "No catalog match found");
+            setText("scanCopy", response.message || "Review the detected items below.");
+
+            const items = response.data || [];
+            detectedList.innerHTML = items.length
+                ? items.map(renderDetectedMedicine).join("")
+                : emptyState("No medicines matched", "Check the printed lines below or search manually.");
             detectedPanel.hidden = false;
+
+            const unmatched = response.unmatched_lines || [];
+            unmatchedList.innerHTML = unmatched.map(renderUnmatchedLine).join("");
+            unmatchedPanel.hidden = unmatched.length === 0;
+            showExtractedText(response.text, response.provider);
         }
     }
 
@@ -586,10 +655,34 @@
 
     function renderDetectedMedicine(item) {
         const name = item.name || item.medicine_name || "Detected medicine";
-        const dose = item.dose || item.instructions || "Review dosage before use";
-        const confidence = Number(item.confidence || 0);
-        return '<div><span class="feature-icon soft"><span class="icon icon-plus"></span></span><div class="min-grow"><strong>' + escapeHtml(name) + '</strong><small>' + escapeHtml(dose) + '</small></div>' +
-            '<div class="confidence"><div class="confidence-label"><span>Confidence</span><strong>' + confidence + '%</strong></div><div class="confidence-track"><span style="width:' + Math.max(0, Math.min(100, confidence)) + '%"></span></div></div></div>';
+        const details = [item.strength, item.dosage_form].filter(Boolean).join(" · ");
+        const dosage = item.dosage_text || "Dosage not detected - confirm on the prescription";
+        const printed = item.source_line ? "Printed: " + item.source_line : "Printed line unavailable";
+        const medicineId = item.medicine_id || item.id;
+        const exact = item.match_type === "exact";
+        const strengthNote = item.strength_match === false
+            ? '<span class="match-badge warning">Printed strength differs</span>'
+            : '';
+        return '<div class="detected-item" data-detected><span class="feature-icon soft"><span class="icon icon-pill"></span></span>' +
+            '<div class="min-grow"><strong>' + escapeHtml(name) + '</strong>' +
+            (details ? '<small>' + escapeHtml(details) + '</small>' : '') +
+            '<small>' + escapeHtml(dosage) + '</small>' +
+            '<small class="ocr-source">' + escapeHtml(printed) + '</small></div>' +
+            '<div class="detected-actions">' +
+            '<span class="match-badge ' + (exact ? "exact" : "partial") + '">' + (exact ? "Name match" : "Possible match") + '</span>' +
+            strengthNote +
+            (medicineId ? '<a class="btn btn-outline btn-sm" href="/medicine/' + encodeURIComponent(medicineId) + '">View</a>' : '') +
+            '<a class="btn btn-outline btn-sm" href="/search?q=' + encodeURIComponent(item.matched_text || name) + '">Search</a>' +
+            '<button class="btn btn-quiet btn-sm" type="button" data-remove-detected>Remove</button>' +
+            '</div></div>';
+    }
+
+    function renderUnmatchedLine(item) {
+        const printed = item.text || "Unreadable line";
+        const query = item.query || printed;
+        return '<div><span class="feature-icon soft"><span class="icon icon-file"></span></span>' +
+            '<div class="min-grow"><strong>' + escapeHtml(printed) + '</strong><small>Not matched to a catalog medicine</small></div>' +
+            '<div class="detected-actions"><a class="btn btn-outline btn-sm" href="/search?q=' + encodeURIComponent(query) + '">Search</a></div></div>';
     }
 
     function normalizeMedicine(item) {
@@ -789,7 +882,7 @@
             if (!sameComposition.length) return '';
             return '<section class="comparison-section same-composition-section">' +
                 '<h3>Cheaper same-composition options <span class="count-badge">' + sameComposition.length + '</span></h3>' +
-                '<p class="disclaimer">Same recorded active ingredients and strength. These are catalog matches, not verified therapeutic equivalents; prices are compared per unit when pack sizes differ.</p>' +
+                '<p class="disclaimer">Same recorded active ingredients and strength, with current listing prices on both sides. These are catalog matches, not verified therapeutic equivalents; prices are compared per unit when pack sizes differ.</p>' +
                 '<div class="substitutes-list">' + sameComposition.map(function (item, idx) {
                     const percent = Number(item.savings_percent || 0);
                     const unit = item.price_per_unit_value
@@ -822,9 +915,14 @@
         };
         const renderSameCompositionOptions = function () {
             if (!sameOptions.length) return '';
+            const noClaimNote = data && !data.reference_price_available
+                ? 'This product has no recorded price, so no cheaper-than-reference saving can be claimed.'
+                : data && data.reference_price_is_current
+                    ? 'This price is a current listing, but no same-composition product with a current listing price is cheaper, so no saving is claimed.'
+                    : 'The recorded price for this product is not a confirmed current listing, so no saving is claimed.';
             return '<section class="comparison-section same-composition-section">' +
-                '<h3>Lowest-priced same-composition options <span class="count-badge">' + sameOptions.length + '</span></h3>' +
-                '<p class="disclaimer">This product has no recorded price, so no cheaper-than-reference saving can be claimed. These catalog products share the recorded active ingredients, strength and form; they are not verified therapeutic equivalents.</p>' +
+                '<h3>Same-composition catalog options <span class="count-badge">' + sameOptions.length + '</span></h3>' +
+                '<p class="disclaimer">' + noClaimNote + ' These catalog products share the recorded active ingredients, strength and form; their catalog prices are unverified and they are not verified therapeutic equivalents.</p>' +
                 '<div class="substitutes-list">' + sameOptions.map(function (item, idx) {
                     const unit = item.price_per_unit_value
                         ? 'Rs. ' + Number(item.price_per_unit_value).toFixed(2) + ' per unit'
@@ -835,7 +933,7 @@
                         '<div class="flex-grow"><h4>' + escapeHtml(item.medicine_name) + '</h4>' +
                         '<p>' + escapeHtml(item.brand_name || item.composition || 'Same recorded composition') + '</p></div>' +
                         '<div class="comparison-price"><span class="price-large">Rs. ' + formatPrice(item.price) + '</span>' +
-                        '<span class="comparison-source">Catalog price</span></div></div>' +
+                        '<span class="comparison-source">Catalog price (unverified)</span></div></div>' +
                         '<div class="comparison-details">' +
                         '<span class="badge">' + escapeHtml(item.dosage_form || 'Form') + '</span>' +
                         '<span class="badge">' + escapeHtml(item.strength || 'Strength') + '</span>' +
@@ -881,7 +979,11 @@
                     ? "Cheaper same-composition options"
                     : data && data.comparison_status === "reference_price_unknown"
                         ? "Lowest-priced same-composition options"
-                        : "No verified alternatives found";
+                        : data && data.comparison_status === "catalog_price_unverified"
+                            ? "Same-composition catalog options"
+                            : data && data.comparison_status === "reference_pack_unknown"
+                                ? "Same-composition catalog options"
+                                : "No verified alternatives found";
             const explanation = data && data.message
                 ? data.message
                 : "No product-specific verified alternatives with recent comparable prices are available.";
