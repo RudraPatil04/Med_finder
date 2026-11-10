@@ -37,7 +37,7 @@
             <span class="medical-note">Not a substitute for medical advice</span>
         </header>
 
-        <div class="chat-messages" id="chatMessages">
+        <div class="chat-messages" id="chatMessages" aria-live="polite">
             <div class="chat-row ai">
                 <span class="avatar-icon icon icon-bot"></span>
                 <div class="bubble">
@@ -55,7 +55,7 @@
         </div>
 
         <form class="chat-form" id="assistantForm">
-            <input id="assistantInput" type="text" placeholder="Ask about medicines, doses, or alternatives..." autocomplete="off">
+            <input id="assistantInput" type="text" placeholder="Ask about medicines, doses, or alternatives…" aria-label="Ask the assistant" autocomplete="off">
             <button class="btn btn-gradient" type="submit">
                 <span class="icon icon-send"></span>
                 Send

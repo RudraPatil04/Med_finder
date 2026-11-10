@@ -5,12 +5,13 @@
 
 {% block content %}
 <section class="app-shell search-page">
+    <h1 class="sr-only">Search medicines</h1>
     <form class="search-toolbar glass" id="medicineSearchForm">
         <span class="search-icon icon icon-search"></span>
-        <input id="medicineSearchInput" type="search" placeholder="Search by brand, composition, or use..." autocomplete="off">
-        <div class="view-toggle" aria-label="View mode">
-            <button class="active" type="button" data-view="grid" title="Grid view"><span class="icon icon-grid"></span></button>
-            <button type="button" data-view="list" title="List view"><span class="icon icon-list"></span></button>
+        <input id="medicineSearchInput" type="search" placeholder="Search by brand, composition, or use…" aria-label="Search medicines" autocomplete="off">
+        <div class="view-toggle" role="group" aria-label="View mode">
+            <button class="active" type="button" data-view="grid" aria-label="Grid view" aria-pressed="true" title="Grid view"><span class="icon icon-grid"></span></button>
+            <button type="button" data-view="list" aria-label="List view" aria-pressed="false" title="List view"><span class="icon icon-list"></span></button>
         </div>
     </form>
 
@@ -30,8 +31,8 @@
                 </div>
             </div>
             <div class="filter-group">
-                <div class="range-label"><span class="eyebrow">Max price</span><strong id="maxPriceLabel">Rs. 1000</strong></div>
-                <input id="maxPrice" type="range" min="10" max="5000" value="1000">
+                <div class="range-label"><label class="eyebrow" for="maxPrice">Max price</label><strong id="maxPriceLabel">Rs. 1000</strong></div>
+                <input id="maxPrice" type="range" min="10" max="5000" value="1000" aria-describedby="maxPriceLabel">
             </div>
             <label class="check-row">
                 <input id="rxOnly" type="checkbox">
@@ -41,7 +42,7 @@
 
         <section class="results-panel">
             <div class="result-meta">
-                <span id="resultCount">Search for a medicine</span>
+                <span id="resultCount" aria-live="polite">Search for a medicine</span>
                 <span>Sort: Relevance</span>
             </div>
             <section class="cheaper-panel" id="cheaperAlternatives" hidden></section>
@@ -52,13 +53,13 @@
                     <p>Search results will appear here with price, brand, category, and prescription details.</p>
                 </div>
             </div>
-            <div class="pagination" id="pagination" hidden>
-                <button type="button" data-page="1" class="active">1</button>
-                <button type="button" data-page="2">2</button>
-                <button type="button" data-page="3">3</button>
-                <button type="button" data-page="4">4</button>
+            <nav class="pagination" id="pagination" aria-label="Search result pages" hidden>
+                <button type="button" data-page="1" class="active" aria-label="Page 1">1</button>
+                <button type="button" data-page="2" aria-label="Page 2">2</button>
+                <button type="button" data-page="3" aria-label="Page 3">3</button>
+                <button type="button" data-page="4" aria-label="Page 4">4</button>
                 <button type="button" data-page-next>Next</button>
-            </div>
+            </nav>
         </section>
     </div>
 </section>

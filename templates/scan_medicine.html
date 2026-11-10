@@ -13,7 +13,7 @@
 
     <div class="scanner-layout">
         <section class="upload-zone glass" id="uploadZone">
-            <label class="drop-card" for="prescriptionFile">
+            <button class="drop-card" type="button" data-file-trigger>
                 <span class="upload-mark"><span class="icon icon-upload"></span></span>
                 <strong>Drag and drop a prescription</strong>
                 <small>PNG, JPG, or PDF up to 10MB</small>
@@ -21,18 +21,20 @@
                     <span>Choose file</span>
                     <span><span class="icon icon-camera"></span> Use camera</span>
                 </span>
-                <input id="prescriptionFile" type="file" accept="image/*,application/pdf" hidden>
-            </label>
+            </button>
+            <input id="prescriptionFile" type="file" accept="image/*,application/pdf" hidden>
             <div class="scan-preview" id="scanPreview" hidden>
                 <div class="preview-frame" id="previewFrame"><span class="icon icon-file"></span></div>
                 <div>
-                    <p class="eyebrow" id="scanStateLabel">Scanning...</p>
+                    <p class="eyebrow" id="scanStateLabel">Scanning…</p>
                     <h2 id="scanTitle">Reading your prescription</h2>
                     <p id="scanCopy">Running OCR and cross-checking against the medicine database.</p>
                     <button class="btn btn-outline" type="button" data-scan-reset hidden>Scan another</button>
                 </div>
             </div>
         </section>
+
+        <p class="sr-only" id="scanStatus" role="status" aria-live="polite"></p>
 
         <aside class="panel surface-only how-it-works">
             <h2><span class="icon icon-sparkles"></span> How it works</h2>

@@ -16,8 +16,8 @@
 
         <form class="hero-search glass" data-global-search>
             <span class="search-icon icon icon-search"></span>
-            <input type="search" name="q" placeholder="Search 350,000+ medicines, brands, compositions..." autocomplete="off">
-            <button class="voice-btn" type="button" title="Voice search"><span class="icon icon-mic"></span></button>
+            <input type="search" name="q" placeholder="Search 350,000+ medicines, brands, compositions…" aria-label="Search medicines" autocomplete="off">
+            <button class="voice-btn" type="button" aria-label="Voice search" title="Voice search"><span class="icon icon-mic"></span></button>
             <a class="upload-btn" href="/scanner"><span class="icon icon-upload"></span> Prescription</a>
             <button class="btn btn-gradient" type="submit">Search <span class="icon icon-arrow-right"></span></button>
         </form>
@@ -114,37 +114,16 @@
     </div>
 </section>
 
-<section class="section app-shell">
-    <div class="stats-band">
-        <div><strong>350K+</strong><span>Medicines Indexed</span></div>
-        <div><strong>120K+</strong><span>Generic Matches</span></div>
-        <div><strong>1.2M</strong><span>Users Helped</span></div>
-        <div><strong>42%</strong><span>Avg. Savings</span></div>
-    </div>
-</section>
-
-<section class="section app-shell">
-    <div class="section-heading">
-        <span class="eyebrow">Testimonials</span>
-        <h2>Trusted by patients and professionals</h2>
-    </div>
-    <div class="testimonial-grid">
-        <article class="testimonial card-hover"><div class="stars">5/5</div><p>"MED FINDER helps me quickly cross-check compositions and generics for customers."</p><strong>Priya Sharma</strong><small>Pharmacist, Mumbai</small></article>
-        <article class="testimonial card-hover"><div class="stars">5/5</div><p>"The prescription scanner workflow saves patients time and keeps medicine data clear."</p><strong>Dr. Rohan Mehta</strong><small>General Physician</small></article>
-        <article class="testimonial card-hover"><div class="stars">5/5</div><p>"Found a cheaper generic for my mother's diabetes medicine in seconds."</p><strong>Anjali Verma</strong><small>Patient</small></article>
-    </div>
-</section>
-
 <section class="section faq-shell">
     <div class="section-heading">
         <span class="eyebrow">FAQ</span>
         <h2>Frequently asked questions</h2>
     </div>
     <div class="faq-list" data-faq>
-        <article class="open"><button type="button">Is MED FINDER a replacement for a doctor?<span class="icon icon-minus"></span></button><p>No. It provides information and guidance but does not replace professional medical advice.</p></article>
-        <article><button type="button">How accurate is prescription scanning?<span class="icon icon-plus"></span></button><p>Accuracy depends on the existing OCR backend and image quality. Clear, well-lit images work best.</p></article>
-        <article><button type="button">Are prices real time?<span class="icon icon-plus"></span></button><p>Prices are read from your existing SQLite medicine database.</p></article>
-        <article><button type="button">Do you sell medicines directly?<span class="icon icon-plus"></span></button><p>No. MED FINDER is a search, comparison, and guidance platform.</p></article>
+        <article class="open"><button type="button" aria-expanded="true" aria-controls="faq-1">Is MED FINDER a replacement for a doctor?<span class="icon icon-minus"></span></button><p id="faq-1">No. It provides information and guidance but does not replace professional medical advice.</p></article>
+        <article><button type="button" aria-expanded="false" aria-controls="faq-2">How accurate is prescription scanning?<span class="icon icon-plus"></span></button><p id="faq-2">Accuracy depends on the existing OCR backend and image quality. Clear, well-lit images work best.</p></article>
+        <article><button type="button" aria-expanded="false" aria-controls="faq-3">Are prices real time?<span class="icon icon-plus"></span></button><p id="faq-3">Prices are read from your existing SQLite medicine database.</p></article>
+        <article><button type="button" aria-expanded="false" aria-controls="faq-4">Do you sell medicines directly?<span class="icon icon-plus"></span></button><p id="faq-4">No. MED FINDER is a search, comparison, and guidance platform.</p></article>
     </div>
 </section>
 {% endblock %}

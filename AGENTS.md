@@ -427,3 +427,82 @@ The key is read from the environment at scan time; no key is committed to the re
 - Some files show as modified in `git status` for unrelated reasons (README, template base,
   external API/service, routes, `.claude/settings.local.json`); they are not part of this change
   set.
+
+## Update — UI trust and accessibility pass (2026-11-10)
+
+Goal: remove fabricated content from the interface and fix the accessibility defects found by
+auditing the UI against Vercel's Web Interface Guidelines. These changes are committed.
+
+### Skills installed (Qoder)
+- `.qoder/skills/frontend-design/` — Anthropic design-direction guidance (`SKILL.md`,
+  `LICENSE.txt`).
+- `.qoder/skills/web-design-guidelines/` — Vercel audit skill, plus `rules.md`, a cached copy of
+  the rule set it normally fetches from
+  `raw.githubusercontent.com/vercel-labs/web-interface-guidelines/main/command.md`.
+- Qoder picks up project-level `.qoder/skills/*` without a restart. The folder is untracked; add
+  it to version control if other machines should get the same skills.
+- Of the five repos reviewed, only these two fit the stack. `vercel-labs/agent-skills` is
+  React/Vercel-specific apart from `web-design-guidelines`; `taste-skill` and
+  `ui-ux-pro-max-skill` are greenfield site/design-system generators; `impeccable` is a viable
+  next step but ships a compiled engine.
+
+### P0 — trust and reachability
+- Fabricated "Rating" removed from cards and the detail page. Both derived `4.<id % 5 + 3>` from
+  the medicine id and presented it as a rating (`renderMedicineCard`, `renderMedicineDetail`).
+- Fabricated social proof removed from the landing page: the stats band ("1.2M Users Helped",
+  "42% Avg. Savings") and three testimonials attributed to named pharmacists and doctors.
+- The scanner drop zone was a `<label>` wrapping a hidden input, so it could only be opened with a
+  mouse. It is now `<button type="button" data-file-trigger>` and `setupScanner` calls
+  `input.click()`. `.drop-card` gained width/font/color/padding resets for the button element.
+- Search inputs had `outline: 0` with no replacement. Added `:focus-within` rings on
+  `.hero-search`, `.search-toolbar`, `.disease-search` and `.chat-form`, plus a global
+  `:focus-visible` ring for links, buttons, summaries, checkboxes and the price range.
+
+### P1 — standards
+- Compare Prices modal: `role="dialog"`, `aria-modal`, `aria-labelledby`; focus moves to Close on
+  open, Tab/Shift+Tab wrap inside the dialog, and focus returns to the triggering button on close.
+- Labels: `aria-label` on the four search inputs; the max-price range has a real
+  `<label for="maxPrice">` and `aria-describedby`.
+- Live regions: `#resultCount`, `#chatMessages`, and a new `#scanStatus` (`role="status"`) that
+  announces scan start, failure and match counts. `.sr-only` utility added.
+- Ten literal `"..."` replaced with `"…"` in status copy and placeholders.
+- All four `transition: all` replaced with the properties that actually animate.
+- `prefers-reduced-motion` block stops the pulse animation, modal fade/slide, smooth scroll and
+  transitions; `overscroll-behavior: contain` on `.modal-content`.
+
+### P2 — polish
+- Skip link to `#main` as the first focusable element; `<main id="main" tabindex="-1">` with
+  `scroll-margin-top: 96px`.
+- `aria-current="page"` on the active nav link and pagination button; pagination is now `<nav>`.
+- View toggle is `role="group"` with labelled buttons and `aria-pressed`; FAQ toggles maintain
+  `aria-expanded`/`aria-controls`.
+- Results page gained a visually hidden `<h1>`.
+- Prices and dates use `Intl.NumberFormat`/`Intl.DateTimeFormat` (`en-IN`); `.price` and
+  `.price-large` use `tabular-nums`; interactive elements use `touch-action: manipulation`.
+- Removed the non-functional "Buy now" and "Save to list" buttons from the detail page (the FAQ
+  already states the product does not sell medicines).
+- "1 results" → "1 result".
+
+### Verification (this session)
+- No console errors on the home, search, detail and scanner pages.
+- Modal: 23 focusable elements, both Tab wraps work, Escape closes and restores focus.
+- Scanner: drop card is a `<button tabindex=0>`, clicking it triggers the file input; a rejected
+  upload populated `#scanStatus` with the backend message.
+- Search `paracetamol`: 20 results, pagination visible, page 2 moves `aria-current`; the view
+  toggle flips `aria-pressed`. `Dolo 650` reports "1 result". Detail 348216 shows `Rs. 12.41`,
+  "Checked 31 Oct 2026", `tabular-nums`, and no dead buttons.
+- Skip link is the first focusable element and moves focus to `<main>`.
+- Not verified by eye: the skip link focus state (the automation window reports
+  `document.hasFocus() === false`, so `:focus` does not match) and the reduced-motion query (the
+  browser tool cannot emulate it). Both rules parse correctly.
+
+### Open items
+- Footer "Resources"/"Legal" links point to `/` and the social icons to `#`; they need real pages
+  or removal.
+- The hero voice button has an `aria-label` but still has no handler.
+- The disease page updates `#diseaseDetail` without a live region.
+- Static assets are at `v=20261110-3`. Restart the app after Python changes only.
+
+Files: `static/css/style.css`, `static/js/app.js`, `templates/base.html`,
+`templates/index.html`, `templates/results.html`, `templates/scan_medicine.html`,
+`templates/assistant.html`, `templates/disease_guidance.html`, `.qoder/skills/` (untracked).

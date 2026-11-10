@@ -33,6 +33,7 @@
             const target = link.getAttribute("data-nav");
             if (target === "/" ? path === "/" : path.startsWith(target || "")) {
                 link.classList.add("active");
+                link.setAttribute("aria-current", "page");
             }
         });
 
@@ -74,6 +75,8 @@
                     icon.classList.remove("icon-minus");
                     icon.classList.add("icon-plus");
                 }
+                const trigger = article.querySelector("button");
+                if (trigger) trigger.setAttribute("aria-expanded", "false");
             });
             if (!wasOpen) {
                 item.classList.add("open");
@@ -82,6 +85,7 @@
                     icon.classList.remove("icon-plus");
                     icon.classList.add("icon-minus");
                 }
+                button.setAttribute("aria-expanded", "true");
             }
         });
     }
@@ -121,8 +125,12 @@
         document.querySelectorAll("[data-view]").forEach(function (button) {
             button.addEventListener("click", function () {
                 state.view = button.getAttribute("data-view") || "grid";
-                document.querySelectorAll("[data-view]").forEach((b) => b.classList.remove("active"));
+                document.querySelectorAll("[data-view]").forEach((b) => {
+                    b.classList.remove("active");
+                    b.setAttribute("aria-pressed", "false");
+                });
                 button.classList.add("active");
+                button.setAttribute("aria-pressed", "true");
                 renderSearchResults();
             });
         });
@@ -189,7 +197,7 @@
         }
 
         container.innerHTML = skeletonCards(6);
-        count.textContent = "Searching...";
+        count.textContent = "Searching…";
         const requestId = ++state.searchRequestId;
         const data = await fetchJson("/api/search?q=" + encodeURIComponent(query));
         // Ignore older responses when a user types a more specific query quickly.
@@ -255,7 +263,7 @@
             '</div>' +
             '<div class="cheaper-list">' + items.map(function (item) {
                 const unitLabel = item.price_per_unit_value
-                    ? 'Rs. ' + Number(item.price_per_unit_value).toFixed(2) + ' per unit'
+                    ? 'Rs. ' + formatUnitPrice(item.price_per_unit_value) + ' per unit'
                     : (item.savings_basis === 'per pack' ? 'Same pack size' : '');
                 return '<a class="cheaper-item" href="/medicine/' + encodeURIComponent(item.id) + '">' +
                     '<div class="cheaper-copy"><strong>' + escapeHtml(item.medicine_name) + '</strong>' +
@@ -296,7 +304,7 @@
         const pagination = document.getElementById("pagination");
         if (!container) return;
 
-        count.textContent = state.filtered.length + " results";
+        count.textContent = state.filtered.length + (state.filtered.length === 1 ? " result" : " results");
         container.classList.toggle("list-mode", state.view === "list");
         container.dataset.viewMode = state.view;
 
@@ -314,7 +322,13 @@
 
         pagination.hidden = state.filtered.length <= state.pageSize;
         pagination.querySelectorAll("[data-page]").forEach(function (button) {
-            button.classList.toggle("active", Number(button.dataset.page) === state.page);
+            const isCurrent = Number(button.dataset.page) === state.page;
+            button.classList.toggle("active", isCurrent);
+            if (isCurrent) {
+                button.setAttribute("aria-current", "page");
+            } else {
+                button.removeAttribute("aria-current");
+            }
         });
     }
 
@@ -353,8 +367,13 @@
             "tesseract": "Tesseract",
             "pdf-text-layer": "PDF text layer"
         };
+        const statusRegion = document.getElementById("scanStatus");
         const reset = document.querySelector("[data-scan-reset]");
         let scanRequest = 0;
+
+        function announce(message) {
+            if (statusRegion) statusRegion.textContent = message;
+        }
 
         ["dragover", "dragleave", "drop"].forEach(function (name) {
             uploadZone.addEventListener(name, function (event) {
@@ -365,6 +384,13 @@
                 }
             });
         });
+
+        const fileTrigger = uploadZone.querySelector("[data-file-trigger]");
+        if (fileTrigger) {
+            fileTrigger.addEventListener("click", function () {
+                input.click();
+            });
+        }
 
         input.addEventListener("change", function () {
             if (input.files[0]) startScan(input.files[0]);
@@ -384,6 +410,7 @@
             ocrText.textContent = "";
             ocrProvider.textContent = "";
             previewFrame.innerHTML = '<span class="icon icon-file"></span>';
+            announce("Scanner reset. Choose a prescription to scan.");
         });
 
         detectedList.addEventListener("click", function (event) {
@@ -420,9 +447,10 @@
             ocrTextPanel.hidden = true;
             reset.hidden = true;
             previewFrame.classList.add("scanning");
-            setText("scanStateLabel", "Scanning...");
+            setText("scanStateLabel", "Scanning…");
             setText("scanTitle", "Reading your prescription");
             setText("scanCopy", "Reading the prescription and matching the catalog.");
+            announce("Scanning the prescription and matching the catalog.");
 
             if (file.type.startsWith("image/")) {
                 const url = URL.createObjectURL(file);
@@ -442,6 +470,7 @@
                 setText("scanStateLabel", "Not readable");
                 setText("scanTitle", "Could not read this prescription");
                 setText("scanCopy", (response && response.message) || "The OCR service did not respond. Try a clearer image or search manually.");
+                announce("Could not read this prescription. " + ((response && response.message) || "Try a clearer image or search manually."));
                 showExtractedText(response && response.text, response && response.provider);
                 return;
             }
@@ -460,6 +489,8 @@
             unmatchedList.innerHTML = unmatched.map(renderUnmatchedLine).join("");
             unmatchedPanel.hidden = unmatched.length === 0;
             showExtractedText(response.text, response.provider);
+            announce((items.length ? items.length + (items.length === 1 ? " medicine matched" : " medicines matched") : "No medicines matched") +
+                (unmatched.length ? " and " + unmatched.length + (unmatched.length === 1 ? " printed line not matched." : " printed lines not matched.") : "."));
         }
     }
 
@@ -581,7 +612,7 @@
             suggestions.hidden = true;
             messages.insertAdjacentHTML("beforeend", chatBubble("user", value));
             input.value = "";
-            messages.insertAdjacentHTML("beforeend", '<div class="chat-row ai typing-row"><span class="avatar-icon icon icon-bot"></span><div class="bubble">Thinking...</div></div>');
+            messages.insertAdjacentHTML("beforeend", '<div class="chat-row ai typing-row"><span class="avatar-icon icon icon-bot"></span><div class="bubble">Thinking…</div></div>');
             messages.scrollTop = messages.scrollHeight;
 
             const response = await fetchJson("/api/assistant", {
@@ -612,7 +643,7 @@
             '<small>' + escapeHtml(m.brand) + '</small>' +
             '<h3>' + escapeHtml(m.name) + '</h3>' +
             '<small>' + escapeHtml(m.manufacturer || m.category || "MED FINDER") + '</small>' +
-            '<div class="medicine-meta"><span class="stars">Rating</span><strong>4.' + ((Number(m.id) % 5) + 3) + '</strong><span>| ' + escapeHtml(m.category || "Medicine") + '</span></div>' +
+            '<div class="medicine-meta"><span>' + escapeHtml(m.category || "Medicine") + '</span></div>' +
             '<div class="price-row"><div><div class="price">Rs. ' + escapeHtml(formatPrice(m.price)) + '</div><div class="mrp">' + priceProvenance(m) + '</div></div><span class="view-pill">View</span></div>' +
             '</div></a>' +
             '<button class="btn btn-outline btn-compare" type="button" data-compare-id="' + m.id + '" onclick="event.preventDefault(); showComparison(' + m.id + ', \'' + escapeHtml(m.name).replace(/'/g, "\\'") + '\')"><span class="icon icon-shuffle"></span> Compare Prices</button>' +
@@ -635,10 +666,9 @@
         return '<section class="panel glass detail-visual">' +
             '<div class="medicine-art ' + gradient + '"><span class="icon icon-pill"></span>' + (m.rx ? '<span class="rx-badge">Prescription</span>' : '') + '</div>' +
             '<div class="detail-price-panel"><div class="price">Rs. ' + escapeHtml(formatPrice(m.price)) + '</div><div class="mrp">' + priceProvenance(m) + '</div></div>' +
-            '<button class="btn btn-gradient btn-block" type="button">Buy now</button><button class="btn btn-outline btn-block" type="button">Save to list</button>' +
             '</section>' +
             '<section><article class="panel surface-only detail-copy">' +
-            '<div class="badge-row"><span class="badge">' + escapeHtml(m.category || "Medicine") + '</span><span class="badge secondary">' + escapeHtml(m.form || "Form") + '</span><span class="badge">4.' + ((Number(m.id) % 5) + 3) + ' rating</span>' +
+            '<div class="badge-row"><span class="badge">' + escapeHtml(m.category || "Medicine") + '</span><span class="badge secondary">' + escapeHtml(m.form || "Form") + '</span>' +
             (m.apiSource ? '<span class="badge secondary">Live catalog record</span>' : '') + '</div>' +
             '<h1>' + escapeHtml(m.name) + '</h1><p class="subline">' + escapeHtml(m.brand || "Brand") + ' | by ' + escapeHtml(m.manufacturer || "MED FINDER") + '</p>' +
             (m.apiSource ? '<p class="subline">Added from the ' + escapeHtml(m.apiSource) + '.' + (Number(m.price) > 0 ? ' The price shown is the live listing price from that catalog.' : ' No price is recorded for this product.') + '</p>' : '') +
@@ -710,7 +740,7 @@
         if (!medicine.price) return "Price unavailable";
         const date = medicine.priceCheckedAt ? new Date(medicine.priceCheckedAt) : null;
         const dateLabel = date && !Number.isNaN(date.getTime())
-            ? "Checked " + date.toLocaleDateString()
+            ? "Checked " + dateFormatter.format(date)
             : "update date unknown";
         return escapeHtml((medicine.priceSource || "Listed price") + " · " + dateLabel);
     }
@@ -758,10 +788,18 @@
         if (el) el.textContent = text;
     }
 
+    const priceFormatter = new Intl.NumberFormat("en-IN", { maximumFractionDigits: 2 });
+    const unitPriceFormatter = new Intl.NumberFormat("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const dateFormatter = new Intl.DateTimeFormat("en-IN", { day: "numeric", month: "short", year: "numeric" });
+
     function formatPrice(value) {
         const number = Number(value || 0);
         if (!number) return "-";
-        return number.toFixed(number % 1 ? 2 : 0);
+        return priceFormatter.format(number);
+    }
+
+    function formatUnitPrice(value) {
+        return unitPriceFormatter.format(Number(value || 0));
     }
 
     function escapeHtml(value) {
@@ -785,6 +823,13 @@
     }
 
     // Price Comparison Feature
+    let modalReturnFocus = null;
+
+    function focusableIn(container) {
+        return Array.from(container.querySelectorAll('a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'))
+            .filter(function (element) { return element.offsetParent !== null; });
+    }
+
     window.showComparison = async function(medicineId, medicineName) {
         // Create modal if it doesn't exist
         let modal = document.getElementById("comparisonModal");
@@ -792,27 +837,49 @@
             modal = document.createElement("div");
             modal.id = "comparisonModal";
             modal.className = "comparison-modal";
-            modal.innerHTML = '<div class="modal-overlay" onclick="closeComparison()"></div>' +
+            modal.setAttribute("role", "dialog");
+            modal.setAttribute("aria-modal", "true");
+            modal.setAttribute("aria-labelledby", "comparisonTitle");
+            modal.innerHTML = '<div class="modal-overlay" aria-hidden="true" onclick="closeComparison()"></div>' +
                 '<div class="modal-content panel glass">' +
                 '<div class="modal-header">' +
                 '<h2><span class="icon icon-shuffle"></span> <span id="comparisonTitle">Price Comparison</span></h2>' +
                 '<button class="btn-close" onclick="closeComparison()" aria-label="Close"><span class="icon icon-x"></span></button>' +
                 '</div>' +
-                '<div class="modal-body" id="comparisonBody">Loading...</div>' +
+                '<div class="modal-body" id="comparisonBody">Loading…</div>' +
                 '</div>';
             document.body.appendChild(modal);
+            modal.addEventListener("keydown", function (event) {
+                if (event.key !== "Tab") return;
+                const focusable = focusableIn(modal);
+                if (!focusable.length) return;
+                const first = focusable[0];
+                const last = focusable[focusable.length - 1];
+                if (event.shiftKey && document.activeElement === first) {
+                    event.preventDefault();
+                    last.focus();
+                } else if (!event.shiftKey && document.activeElement === last) {
+                    event.preventDefault();
+                    first.focus();
+                }
+            });
         }
 
         // Show modal
+        if (!modal.classList.contains("active")) {
+            modalReturnFocus = document.activeElement;
+        }
         modal.classList.add("active");
         document.body.style.overflow = "hidden";
+        const closeButton = modal.querySelector(".btn-close");
+        if (closeButton) closeButton.focus();
 
         // Update title
         document.getElementById("comparisonTitle").innerHTML = 'Alternatives for <strong>' + escapeHtml(medicineName) + '</strong>';
 
         // Fetch substitutes
         const body = document.getElementById("comparisonBody");
-        body.innerHTML = '<div class="loading-state"><div class="spinner"></div><p>Checking verified alternatives...</p></div>';
+        body.innerHTML = '<div class="loading-state"><div class="spinner"></div><p>Checking verified alternatives…</p></div>';
 
         const responses = await Promise.all([
             fetchJson("/api/substitutes/" + encodeURIComponent(medicineId) + "?limit=10"),
@@ -886,7 +953,7 @@
                 '<div class="substitutes-list">' + sameComposition.map(function (item, idx) {
                     const percent = Number(item.savings_percent || 0);
                     const unit = item.price_per_unit_value
-                        ? 'Rs. ' + Number(item.price_per_unit_value).toFixed(2) + ' per unit'
+                        ? 'Rs. ' + formatUnitPrice(item.price_per_unit_value) + ' per unit'
                         : '';
                     return '<article class="comparison-item substitute">' +
                         '<div class="comparison-header">' +
@@ -925,7 +992,7 @@
                 '<p class="disclaimer">' + noClaimNote + ' These catalog products share the recorded active ingredients, strength and form; their catalog prices are unverified and they are not verified therapeutic equivalents.</p>' +
                 '<div class="substitutes-list">' + sameOptions.map(function (item, idx) {
                     const unit = item.price_per_unit_value
-                        ? 'Rs. ' + Number(item.price_per_unit_value).toFixed(2) + ' per unit'
+                        ? 'Rs. ' + formatUnitPrice(item.price_per_unit_value) + ' per unit'
                         : '';
                     return '<article class="comparison-item substitute">' +
                         '<div class="comparison-header">' +
@@ -1080,6 +1147,10 @@
             modal.classList.remove("active");
             document.body.style.overflow = "";
         }
+        if (modalReturnFocus && document.contains(modalReturnFocus)) {
+            modalReturnFocus.focus();
+        }
+        modalReturnFocus = null;
     };
 
     // Close modal on Escape key
