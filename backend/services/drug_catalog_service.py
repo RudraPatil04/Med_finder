@@ -70,6 +70,9 @@ def ensure_catalog_schema():
         ("api_record_id", "TEXT"),
         ("api_fetched_at", "TEXT"),
         ("search_norm", "TEXT"),
+        ("mrp", "REAL"),
+        ("price_type", "TEXT"),
+        ("composition_source", "TEXT"),
     ):
         if name not in columns:
             execute_non_query(f"ALTER TABLE medicines ADD COLUMN {name} {ddl}")

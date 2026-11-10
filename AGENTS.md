@@ -368,6 +368,55 @@ results.
 - Injection rows in the dataset carry no pack size, so they cannot support per-unit price
   comparisons.
 
+## Update — DrugSetu enrichment (2026-11-10)
+
+Goal: fill missing composition and pack size for dataset rows, and record MRP as an
+attributable reference price, without touching the retail comparison logic.
+
+### What was added
+- `backend/services/drugsetu_service.py` — searches `https://api.drugsetu.com/v1` with
+  `X-API-Key` and writes only missing fields.
+- `backend/services/enrichment_worker.py` — one background daemon thread, one medicine at a
+  time. `GET /api/medicine/<id>` queues a row when composition, pack size or MRP is missing; the
+  response renders the current data and the next view shows the filled fields.
+- Schema: `medicines.mrp REAL`, `medicines.price_type TEXT`, `medicines.composition_source TEXT`
+  added in `ensure_catalog_schema()` and in `etl/build_database.py`.
+- `test_drugsetu_enrichment.py` — 11 offline tests (matching, pack parsing, writes, caching).
+
+### Matching rules (deliberate)
+- The first token of `brand_name` must equal the first token of the product name.
+- Dosage-form families must match (`tablet`, `capsule`, `injection`, `cream`, …). This is
+  mandatory: 4 of 13 sampled hits were the wrong form.
+- Strength pairs parsed from `strength` and from the returned composition must be identical.
+- Two candidates with different compositions for the same brand/form/strength are ambiguous and
+  skipped.
+- Complete compositions, existing pack sizes and existing MRP are never overwritten.
+
+### Price rules
+- MRP goes to `mrp` with `price_type='mrp'`; `price`, `price_source` and `price_checked_at` are
+  untouched, so the savings gate cannot fire on an MRP.
+- `composition_source` records that DrugSetu supplied the composition.
+
+### Transport
+- 2 s minimum spacing between calls; three attempts on a burst 429.
+- Missing/rejected key → `unavailable`; trial/quota exhaustion → `quota_exceeded`; transport
+  failures → `failed`. None of these are cached, so a fixed key or plan retries on the next view.
+- A completed no-match is cached for 7 days, a successful enrichment for 30 days
+  (`api_search_cache` key `drugsetu:<id>`).
+
+### Measured coverage (50 products, 2026-11-10)
+- 25 known rows: 10 search hits, 10/10 same form, 9 same composition, 1 conflict
+  (`Uniprogestin 250`: ours `Progesterone`, DrugSetu `Hydroxyprogesterone` — ours looks wrong).
+- 25 random incomplete rows: 13 hits, 4 rejected on form → 9 usable fills (36%).
+- Every hit returned a pack size and an MRP.
+- The known-row hit rate is understated: the probe sent full combination strength strings as
+  query text (`Becosules 150/100/50/...`).
+
+### Blocker
+- The provided key is a 100-request trial and is exhausted (`Trial Limit Reached`). No real row
+  has been enriched end-to-end yet; the write path is verified by mocked tests only. Buy a plan,
+  set `DRUGSETU_API_KEY`, restart, then open an incomplete medicine to verify.
+
 ## How to run
 
 ```bat
@@ -379,6 +428,16 @@ venv\Scripts\python.exe -m backend.app
 ```
 
 App runs at http://127.0.0.1:5000. Restart it after Python changes; the database is read live.
+
+Optional DrugSetu enrichment (fills missing composition, pack size and MRP):
+
+```bat
+set DRUGSETU_API_KEY=your-key
+venv\Scripts\python.exe -m backend.app
+```
+
+The key is read from the environment at lookup time; no key is committed. Without it the
+background enricher does nothing.
 
 Prescription OCR additionally needs Tesseract and the Python bindings:
 

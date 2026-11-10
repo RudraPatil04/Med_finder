@@ -23,6 +23,7 @@ from backend.recommendation_service import get_substitutes
 from backend.services.india_medicine_api import search_live_alternatives
 from backend.services.price_comparison_service import compare_current_prices
 from backend.services.price_enrichment_service import persist_reference_price
+from backend.services.enrichment_worker import request_enrichment
 
 medicine_bp = Blueprint("medicine", __name__)
 
@@ -73,6 +74,17 @@ def medicine_details(medicine_id):
             "success": False,
             "message": "Medicine not found."
         }), 404
+
+    try:
+        needs_enrichment = (
+            not medicine["composition_complete"]
+            or not medicine["pack_size"]
+            or medicine["mrp"] is None
+        )
+    except IndexError:
+        needs_enrichment = True
+    if needs_enrichment:
+        request_enrichment(medicine_id)
 
     return jsonify({
         "success": True,

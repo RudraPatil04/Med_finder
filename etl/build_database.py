@@ -114,7 +114,13 @@ def build_database(df):
 
             api_fetched_at TEXT,
 
-            search_norm TEXT
+            search_norm TEXT,
+
+            mrp REAL,
+
+            price_type TEXT,
+
+            composition_source TEXT
 
         );
 
