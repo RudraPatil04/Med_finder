@@ -1197,7 +1197,9 @@
                         '<div class="comparison-price"><span class="price-large">Rs. ' + formatPrice(item.price) + '</span>' +
                         (percent > 0 && item.price_is_current
                             ? '<span class="savings-badge ' + savingsClass(percent) + '">Save ' + percent.toFixed(0) + '%</span>'
-                            : '<span class="comparison-source">List price</span>') +
+                            : Number(item.estimated_savings_percent || 0) > 0
+                                ? '<span class="savings-badge estimated">Est. save ' + Number(item.estimated_savings_percent).toFixed(0) + '%</span>'
+                                : '<span class="comparison-source">List price</span>') +
                         '</div></div>' +
                         '<div class="comparison-details">' +
                         '<span class="badge">' + escapeHtml(item.pack || 'Pack unknown') + '</span>' +
@@ -1248,7 +1250,9 @@
                 ? 'This product has no recorded price, so no cheaper-than-reference saving can be claimed.'
                 : data && data.reference_price_is_current
                     ? 'This price is a current listing, but no same-composition product with a current listing price is cheaper, so no saving is claimed.'
-                    : 'The recorded price for this product is not a confirmed current listing, so no saving is claimed.';
+                        : sameOptions.some(function (item) { return Number(item.estimated_savings_percent || 0) > 0; })
+                        ? 'The recorded prices are not confirmed current listings, so savings shown are estimates from catalog prices per unit; check the price at your pharmacy.'
+                        : 'The recorded price for this product is not a confirmed current listing, so no saving is claimed.';
             return '<section class="comparison-section same-composition-section">' +
                 '<h3>Same-composition catalog options <span class="count-badge">' + sameOptions.length + '</span></h3>' +
                 '<p class="disclaimer">' + noClaimNote + ' These catalog products share the recorded active ingredients, strength and form; their catalog prices are unverified and they are not verified therapeutic equivalents.</p>' +
@@ -1262,6 +1266,9 @@
                         '<div class="flex-grow"><h4>' + escapeHtml(item.medicine_name) + '</h4>' +
                         '<p>' + escapeHtml(item.brand_name || item.composition || 'Same recorded composition') + '</p></div>' +
                         '<div class="comparison-price"><span class="price-large">Rs. ' + formatPrice(item.price) + '</span>' +
+                        (Number(item.estimated_savings_percent || 0) > 0
+                            ? '<span class="savings-badge estimated">Est. save ' + Number(item.estimated_savings_percent).toFixed(0) + '%</span>'
+                            : '') +
                         '<span class="comparison-source">Catalog price (unverified)</span></div></div>' +
                         '<div class="comparison-details">' +
                         '<span class="badge">' + escapeHtml(item.dosage_form || 'Form') + '</span>' +
