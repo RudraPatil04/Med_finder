@@ -371,7 +371,30 @@ def composition_label(ingredients):
 # PDF reading
 # ------------------------------------------------------------
 
+def iter_csv_rows(csv_path, start_page=1):
+    """The janaushadhi.gov.in "Product List" export has the same columns as the
+    PDF table (Sr No, Drug Code, Generic Name, Unit Size, MRP, Group Name).
+    The whole file counts as page 1 for the resume cursor."""
+    import csv
+
+    if start_page > 1:
+        return
+    with open(csv_path, newline="", encoding="utf-8-sig") as handle:
+        reader = csv.reader(handle)
+        header = next(reader, None)
+        header_text = " ".join(header or []).lower()
+        if header and not ("generic" in header_text or "mrp" in header_text):
+            yield 1, header
+        for row in reader:
+            if row and any(cell.strip() for cell in row):
+                yield 1, row
+
+
 def iter_table_rows(pdf_path, start_page=1):
+    if str(pdf_path).lower().endswith(".csv"):
+        yield from iter_csv_rows(pdf_path, start_page)
+        return
+
     import fitz
 
     document = fitz.open(str(pdf_path))
@@ -463,7 +486,7 @@ def write_record(record, edition, edition_date, source_url):
 
 def run(args):
     if not Path(args.pdf).exists():
-        print(f"PDF not found: {args.pdf}")
+        print(f"File not found: {args.pdf}")
         return 2
 
     cursor = 0 if args.dry_run else read_cursor()
@@ -588,7 +611,8 @@ def parse_args(argv):
         prog="python -m etl.import_jan_aushadhi",
         description="Import the PMBJP (Jan Aushadhi) product/MRP list as reference prices.",
     )
-    parser.add_argument("--pdf", help="path to the PMBJP product list PDF")
+    parser.add_argument("--pdf", help="path to the PMBJP product list: the PDF, or the "
+                             "site's Product List .csv export")
     parser.add_argument("--edition", default="", help="edition label, e.g. 2025")
     parser.add_argument("--edition-date", default=None,
                         help="observation date (YYYY-MM-DD); PMBI publishes editions, not row dates")
@@ -628,6 +652,8 @@ def main(argv=None):
     if args.reset:
         reset_cursor()
         print("Cursor cleared.")
+        if not args.pdf:
+            return 0
 
     if not args.dry_run:
         ensure_schema()
