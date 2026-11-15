@@ -2500,6 +2500,12 @@ input[type="range"] {
     margin: 0 0 4px;
 }
 
+.cheaper-loading {
+    margin: 0;
+    font-size: 14px;
+    color: var(--muted);
+}
+
 .cheaper-reference-note {
     margin: 0 0 12px;
     font-size: 12px;

@@ -384,8 +384,12 @@
         clearCheaperAlternatives();
         if (!medicine || !medicine.id) return;
 
+        // The server may fetch current pharmacy prices first, which takes a few seconds.
+        panel.innerHTML = '<p class="cheaper-loading" role="status">Checking current prices for cheaper same-composition options…</p>';
+        panel.hidden = false;
         const data = await fetchJson("/api/substitutes/" + encodeURIComponent(medicine.id) + "?limit=6");
         if (requestId !== state.searchRequestId) return;
+        clearCheaperAlternatives();
         if (!data || !data.success) return;
 
         const cheaper = (data.same_composition_alternatives || []).filter(function (item) {
@@ -438,8 +442,8 @@
                     '</div></a>';
             }).join('') + '</div>';
 
-        // A published generic list price prices a different product. It is shown as a
-        // price reference only, so it never claims a saving over the searched brand.
+        // A published generic list price prices a different product. A per-unit
+        // difference is shown only when the list and this brand's price are both current.
         const referenceHtml = !referenceOptions.length ? '' : '<div class="cheaper-reference">' +
             '<p class="eyebrow">Jan Aushadhi list price</p>' +
             '<p class="cheaper-reference-note">Published generic list price for a product with the same recorded ingredients, strength and form. It is not a listing of this brand, and it does not show that the products can be substituted.</p>' +
@@ -458,6 +462,9 @@
                     '<small>' + escapeHtml(dateLabel) + '</small></div>' +
                     '<div class="cheaper-price"><span>Rs. ' + formatPrice(item.price) + '</span>' +
                     (unitLabel ? '<small>' + escapeHtml(unitLabel) + '</small>' : '') +
+                    (item.price_is_current && Number(item.savings_percent || 0) > 0
+                        ? '<small class="savings-badge ' + savingsClass(item.savings_percent) + '">' + Number(item.savings_percent).toFixed(0) + '% lower per unit</small>'
+                        : '') +
                     '<small>Jan Aushadhi list price</small>' +
                     '</div></div>';
             }).join('') + '</div></div>';

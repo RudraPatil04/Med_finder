@@ -163,6 +163,11 @@ def _reference_price_options(medicine, signature, limit=5):
     )]
     if not rows:
         return [], 0
+    # When a current edition lists this composition, older editions are superseded.
+    current_rows = [row for row in rows
+                    if _fresh_within(row.get("observed_at"), REFERENCE_PRICE_MAX_AGE_DAYS)]
+    if current_rows:
+        rows = current_rows
 
     reference_unit = _price_per_unit(medicine.get("price"), medicine.get("pack_size"))
     reference_current = _fresh_price(medicine.get("price_checked_at"))

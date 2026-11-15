@@ -25,6 +25,7 @@ from backend.services.india_medicine_api import search_live_alternatives
 from backend.services.price_comparison_service import compare_current_prices
 from backend.services.price_enrichment_service import persist_reference_price
 from backend.services.enrichment_worker import request_enrichment
+from backend.services.live_price_refresh import substitutes_with_live_prices
 
 medicine_bp = Blueprint("medicine", __name__)
 
@@ -119,7 +120,11 @@ def medicine_details(medicine_id):
 def medicine_substitutes(medicine_id):
 
     limit = request.args.get("limit", 5, type=int)
-    result = get_substitutes(medicine_id, limit=limit)
+    # live=0 skips the price lookups and answers from stored prices only.
+    if request.args.get("live", "1") == "0":
+        result = get_substitutes(medicine_id, limit=limit)
+    else:
+        result = substitutes_with_live_prices(medicine_id, limit=limit)
 
     return jsonify(result)
 
