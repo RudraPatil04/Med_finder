@@ -417,6 +417,336 @@ attributable reference price, without touching the retail comparison logic.
   has been enriched end-to-end yet; the write path is verified by mocked tests only. Buy a plan,
   set `DRUGSETU_API_KEY`, restart, then open an incomplete medicine to verify.
 
+## Update — Jan Aushadhi reference price import (2026-11-13, uncommitted)
+
+Goal: give the app a dated, per-product price that can actually be cheaper than the
+searched brand. NPPA ceilings cannot do this (the ceiling is per formulation, identical
+for every brand); the PMBJP list prices an actual generic product.
+
+### Script (`etl/import_jan_aushadhi.py`, new)
+- Reads the PMBJP product/MRP PDF with PyMuPDF `find_tables()`; the table columns are
+  Sr.No, Drug Code, Generic Name, Unit Size, MRP.
+- Parses each generic name into ingredient + strength (every component must carry a
+  strength, otherwise the row is skipped), derives the dosage form, and converts the
+  pack MRP to `price_per_unit`.
+- Writes to a new table `reference_prices` with `price_kind='reference_generic'`,
+  `source='Jan Aushadhi (PMBJP)'`, `source_edition`, `observed_at` (only when
+  `--edition-date` is given), and a `composition_key` of
+  `<form>|<ingredient:strength>+...` built with the same `normalize_measure` /
+  `normalize_medication_text` functions as `medicine_ingredients`, so a reference price
+  can be joined to the catalogue.
+- Unique on `(source, source_edition, drug_code)`, so re-importing an edition updates
+  in place. `--replace` clears the edition first.
+- Cursor in `backfill_state` under `jan_aushadhi:v1`; the cursor only advances past a
+  fully consumed page, so `--limit` and Ctrl-C resume without skipping rows.
+- `--dry-run` writes nothing (not even the table) and leaves the cursor alone.
+- Skipped rows are reported by reason: unparseable name, zero MRP, ambiguous pack size
+  ("1's Tin 250g" has both a pack count and a net weight), short row.
+
+### Measured on the 2025 list (63 pages, 2,485 rows)
+- 1,721 parsed and importable; 629 join the catalogue by form + composition
+  (623 distinct compositions).
+- 439 unparseable names — dominated by surgical/consumable items (janaushadhi branded
+  kits, polypropylene mesh, endotracheal tubes, suction catheters) and multivitamin /
+  vaccine entries that carry no per-ingredient strength. Skipping them is correct.
+- 297 rows have MRP 0.00 in the source ("not priced").
+- 26 ambiguous pack sizes.
+- Atorvastatin 10 mg = ₹8.80 per 10's (₹0.88/tablet) and 20 mg = ₹12.10 per 10's
+  (₹1.21/tablet), against NPPA ceilings of ₹5.09 and ₹12.86 per tablet
+  (S.O. 1575(E), 25.03.2026).
+- Verified against a throwaway database: 1,721 rows written, second run leaves 1,721
+  with 0 duplicates, full run sets cursor 63, resume reads 0 rows.
+
+### Caveats
+- The PDF used for verification is a third-party mirror
+  (`gpvdspharma.com/.../Jan-Aushadhi-Drug-Code-List-2025.pdf`); mirrors are known to
+  corrupt decimals. The official list is a JS app (`janaushadhi.gov.in`) and an
+  Angular/ASP.NET form (`pmbi.co.in`), so download the PDF by hand from the official
+  site and pass it with `--pdf`.
+- PMBI publishes editions, not row dates. Without `--edition-date` the price has
+  `observed_at = NULL` and must not satisfy a freshness check.
+- A reference price is not evidence of equivalence; it is only a price for the same
+  recorded composition and form.
+- Re-run after `python -m etl.build_database`, which replaces `medicine_ingredients`
+  and therefore invalidates every `composition_key`.
+- Nothing in the app reads `reference_prices` yet; the search/comparison UI is unchanged.
+
+Files: `etl/import_jan_aushadhi.py` (new).
+
+## Update — reference prices in the alternatives response (2026-11-14, uncommitted)
+
+Goal: surface a dated published generic price next to the catalog alternatives, without
+turning it into a second kind of "cheaper brand" claim. All changes below are uncommitted.
+
+### Shared form key (`backend/medicine_data.py`)
+- `normalize_dosage_form()` + `_DOSAGE_FORM_KEYWORDS` collapse a dosage-form string into
+  `tablet`, `capsule`, `oral_liquid`, `injection`, … and `COUNTABLE_DOSAGE_FORMS` marks the
+  forms with a countable pack unit.
+- `etl/import_jan_aushadhi.py` now imports those helpers instead of keeping its own copy, so the
+  importer and the API build identical keys. A dry run still parses 1,721 rows and matches 629.
+
+### Response (`backend/recommendation_service.py`)
+- `_composition_key(medicine, signature)` builds `<form family>|<ingredient:strength>+...` from
+  the *same* normalized ingredient rows used for candidate matching, so the join is by recorded
+  composition, not by name.
+- `_reference_price_options()` reads up to 20 rows for that key, cheapest per unit first, and
+  returns `reference_price_options` plus `reference_price_option_count`. `_reference_table_ready()`
+  makes a database without the table (fresh clone, tests) return an empty list instead of failing.
+- Each option carries `source`, `edition`, `product_name`, `composition`, `pack`, `price`,
+  `price_per_unit`, `unit`, `price_kind`, `observed_at`, `price_is_current` and
+  `match_classification`. When the reference product has a per-unit price in the same unit it
+  also carries `reference_price_per_unit` and `difference_per_unit`.
+- Freshness: `REFERENCE_PRICE_MAX_AGE_DAYS = 400` (`_fresh_within`), separate from the 30-day
+  listing window. An edition is not a live listing, but an undated or year-old one still cannot
+  support a saving.
+- `savings_amount` / `savings_percent` / `savings_basis` are set **only** when the searched
+  product's price is a current listing (30 days) *and* the list price carries a recent
+  observation date. Otherwise only the arithmetic difference is reported.
+
+### UI (`static/js/app.js`, `static/css/style.css`, `templates/base.html`)
+- Search page panel: a "Jan Aushadhi list price" block under the catalog options, up to three
+  entries, with product, composition, pack, list date and per-unit price. The block also renders
+  when a medicine has no priced catalog alternative at all.
+- Compare Prices modal: a "Jan Aushadhi list price for the same composition" section in both the
+  empty and the verified render paths, showing the per-unit difference against the searched
+  product's recorded price, and a savings badge only when the backend supplied one.
+- Both places state that the price belongs to a generic product, not the searched brand, and that
+  it does not show the products can be substituted.
+- `formatDateValue()` added next to the other formatters; assets bumped to `v=20261114-1`.
+
+### Verification
+- On a copy of the real database with the 2025 list imported: Atorvastatin 20mg (117090) →
+  `reference_price_option_count: 1`, `Atorvastatin Tablets IP 20mg`, `10's`, ₹12.10,
+  ₹1.21/tablet, difference ₹0.79/unit, `price_is_current: false`, no savings fields.
+  Dolo 650 (7087) → `Paracetamol Tablets IP 650 mg`, `15's`, ₹15, ₹1.00/tablet vs ₹2.13/tablet
+  recorded, difference ₹1.13/unit, no saving claim.
+- Browser-verified on a server pointed at the copy: the search panel shows the block under six
+  catalog options, and the Compare Prices modal renders the section for Atorvastatin with no
+  console errors. Existing catalog-option behaviour (Dolo 650) is unchanged apart from the block.
+- New tests in `test_api_fallback_cache.py`: no table → no options; a capsule product does not
+  join a tablet key; an old edition reports a difference but no saving; a recent edition plus a
+  current reference price yields 80% for a ₹10 → ₹1 per-capsule gap. 55 tests pass across
+  `test_api_fallback`, `test_api_fallback_cache`, `test_prescription_ocr`, `test_clean`,
+  `test_drug_catalog_client`, `test_backfill_compositions`; 11 more in `test_drugsetu_enrichment`.
+
+### Caveats
+- The join needs a complete recorded composition, a dosage form, and a matching imported edition.
+  Only 629 of the 1,721 imported rows join today; incomplete catalog rows get nothing.
+- Price differences are arithmetic on the searched product's *recorded* price, which is usually an
+  undated dataset price; they are labelled as a difference, never as a saving.
+- `database/medfinder.db` now carries the 2025 edition: 1,721 rows imported on 2026-11-14 from
+  `datasets/Jan-Aushadhi-Drug-Code-List-2025.pdf` (a third-party mirror of the PMBI list, passed
+  with `--source-url`), `observed_at = 2025-04-01`, 629 rows join the catalogue.
+- Every imported price is labelled "over a year old" or "list date not published" until a newer
+  edition is imported; none of them can currently support a saving claim.
+
+Files: `backend/medicine_data.py`, `backend/recommendation_service.py`, `etl/import_jan_aushadhi.py`,
+`static/js/app.js`, `static/css/style.css`, `templates/base.html`, `test_api_fallback_cache.py`.
+
+### Still open
+- Import a newer edition when PMBI publishes one (the 2025 list is already over a year old).
+
+## Update — safety blocklist (2026-11-14, uncommitted)
+
+Goal: never offer a product as a cheaper same-composition option when the switch itself is a
+clinical decision. All changes below are uncommitted.
+
+### Rules (`backend/medicine_data.py`)
+- `NARROW_THERAPEUTIC_INDEX` — 25 curated ingredient terms (warfarin, acenocoumarol,
+  levothyroxine, lithium, digoxin, phenytoin, carbamazepine, valproate/valproic acid,
+  theophylline, tacrolimus, ciclosporin, mycophenolate, methotrexate, colchicine, clozapine, …),
+  matched as substrings of the normalized ingredient name so salts and combination products are
+  caught.
+- `SUPERVISED_DOSAGE_FORMS = {injection, inhaler}` — forms where a cheaper brand is not a
+  self-service choice.
+- `is_modified_release(*values)` — true when the release column is set, when a name carries
+  XR/ER/SR/CR/MR/XL/DR/EC/LA/OD/TR, or when it says extended/sustained/controlled/modified/
+  prolonged/slow/delayed release, retard, depot or osmotic.
+- `restricted_reason(medicine, ingredient_names)` returns a clause for the message
+  ("it is a modified-release formulation", "it is an injectable or inhaled form",
+  "it contains a narrow therapeutic index ingredient") or None.
+
+### Behaviour (`backend/recommendation_service.py`)
+- A restricted **reference** returns status `restricted_class` with
+  `restricted_class_reason`; same-composition alternatives, catalog options, same-ingredient
+  matches, verified substitutes, and Jan Aushadhi reference prices are all left empty.
+- `_candidate_rows()` also drops candidates whose name marks modified release even when their
+  `release_type` column is empty — the hole where an `… SR Tablet` could pass as a plain
+  equivalent.
+- UI: the Compare Prices modal titles the empty state "Cheaper options are not shown" and shows
+  the message. The search-page panel stays hidden (no lists to show); nothing is silently
+  mislabelled. Assets bumped to `v=20261114-2`.
+
+### Measured on the real database
+- 42,606 of 270,793 complete rows are now restricted: 24,418 modified-release, 17,829
+  injectable/inhaled, 359 narrow-therapeutic-index.
+- `Cofarin 1mg Tablet` (warfarin) → `restricted_class`, message names the narrow therapeutic
+  index; `Accumet 1 GM Tablet SR` (159681) → `restricted_class`, modified release; both with zero
+  lists and zero reference prices.
+- Unchanged: Dolo 650, Nofemol 650, Metformin 500, Crocin 500 (no restriction, same option
+  counts as before). 69 tests pass across the seven focused modules.
+
+### Caveats
+- Substring matching also catches rows where the manufacturer name was glued to the ingredient
+  (`aviatriscompanyciclosporin`), which is correct — same drug.
+- `EC` and `TR` are blocked as abbreviations; a brand that merely contains them as a standalone
+  token is excluded conservatively.
+- The restriction is calculated from recorded composition and form only. A row with an
+  incomplete composition can still slip through the NTI check.
+- Search results themselves are not flagged; only the alternatives and price sections are
+  suppressed.
+
+Files: `backend/medicine_data.py`, `backend/recommendation_service.py`,
+`static/js/app.js`, `templates/base.html`, `test_api_fallback_cache.py`.
+
+## Update — manufacturer-prefix repair in compositions (2026-11-15, uncommitted)
+
+Goal: a searched brand whose source composition starts with the manufacturer (e.g.
+`Cure Healthcare Naproxen (500mg) + Domperidone (10mg)`) records the ingredient as
+`curehealthcarenaproxen`, so it can never match cleanly recorded products and gets no
+alternatives at all. `Naxdom 500` was the reported case: zero options.
+
+### Rule (`etl/repair_ingredient_prefixes.py`, new)
+- A phrase is learned as a manufacturer name only when it is a separate word (or words) in
+  front of **>= 3 distinct** ingredients that the catalog records often (>= 25 rows). 168
+  phrases qualify.
+- A name is rewritten only when the learned phrase is a word-boundary prefix **and** the
+  remainder is itself a recorded ingredient name.
+- A multi-word name whose full normalized form is already a recorded ingredient is never
+  split, which protects real drug names that look like prefix + drug (`levocetirizine`,
+  `methylprednisolone`). Verified: `levocetirizine` rows 8,477 -> 8,649 (absorbed the prefixed
+  spellings), none lost; `methylprednisolone` 1,910 -> 1,942.
+- `repair_component()` keeps the strength text and trailing markers
+  (`Cure Healthcare Naproxen (500mg)ADD` -> `Naproxen (500mg)ADD`).
+- Writes `medicine_ingredients.ingredient_name` / `_norm`, the medicine `composition` text,
+  and recomputes `product_key`. `search_norm` (name + brand) is untouched.
+- Dry run by default; `--apply` writes; `--sample N` prints rewrites. Idempotent — a second
+  run finds nothing.
+- This runs on the built database, so re-run it after `python -m etl.build_database`, which
+  rebuilds these tables from the still-polluted source dataset.
+
+### Measured on a copy of the real database
+- 6,118 medicines repaired (6,118 ingredient rows, 168 phrases). Largest phrases:
+  `slaboratories` 572, `pharmaceuticals` 463, `research` 423, `chemicals` 210,
+  `careincorp` 200.
+- `Naxdom 500 Tablet` (70888): `Cure Healthcare Naproxen (500mg) + Domperidone (10mg)` ->
+  `Naproxen (500mg) + Domperidone (10mg)`; `/api/substitutes/70888` goes from no options to
+  `catalog_price_unverified` with **73** same-composition options (Pandex 10 tablets Rs 69,
+  Rs 6.90/tablet, first).
+- An earlier draft stripped prefixes without checking the remainder: 6,834 rows, but it also
+  rewrote names whose remainder the catalog does not record. The apply-time guard was added
+  for that reason (716 fewer rows).
+- Tests: `test_repair_ingredient_prefixes.py` (6) covers phrase learning, the unknown-remainder
+  guard, the `levo`/`methyl` protection, marker-preserving rewrites, idempotency and
+  read-only planning. Focused suite: 64 tests pass.
+
+### Caveats
+- Only compositions where the manufacturer is separated by a space can be recognised; a fully
+  glued `Curehealthcarenaproxen` (one word in the source) is not repaired.
+- The phrases are learned from the current data, so a manufacturer that appears in front of
+  fewer than 3 different ingredients is left alone.
+- Rewriting `composition` drops nothing else: only the ingredient words before the first `(`
+  are replaced; components without a parenthetical are untouched.
+- Not yet applied to `database/medfinder.db` — the numbers above come from a copy.
+
+Files: `etl/repair_ingredient_prefixes.py` (new), `test_repair_ingredient_prefixes.py` (new).
+
+## Update — home search suggestion dropdown (2026-11-15, uncommitted)
+
+Goal: both search boxes (home hero and results toolbar) offer a type-ahead list of medicines whose
+price comparison actually works. The list is populated before anything is typed and narrows to the
+typed prefix, including a single letter, without changing free-text search (typing a query and
+pressing Enter still searches everything).
+
+### "Fully functional" definition (`suggest_functional_medicines`)
+A medicine is suggested only when all of these hold:
+- `composition_complete = 1` and a non-empty `brand_name`;
+- `restricted_reason()` is None (no narrow-therapeutic-index ingredient, not an
+  injection/inhaler, not modified release);
+- at least one other product records the **same ingredient set** (same count, no missing
+  ingredient), same strength, same dosage form, same release type, and carries a price **and**
+  a pack size (`_PRICED_OPTION_SQL`). Whether that price is current only sets the label, it
+  does not gate the suggestion.
+
+That is exactly the condition that makes `/api/substitutes` return a cheaper-or-catalog option
+list; a medicine whose composition has no priced sibling (e.g. `Becosules`, a lone brand) is
+never suggested.
+
+### Endpoint (`GET /api/search-suggestions?q=`, any length, max 8 items)
+- Empty `q` returns a starter recommendation list (one item per `SUGGESTION_SEEDS` brand:
+  dolo, crocin, calpol, combiflam, augmentin, azithral, montek, zerodol — all verified to
+  resolve on the real database), so the box has content before anything is typed.
+- Any non-empty query, including a single letter (`m`), matches `search_norm GLOB '<key>*'`
+  (name + brand prefix). Strength, unit and punctuation are stripped by
+  `normalize_medication_text`, so `dolo 650` matches `dolo650`.
+- Up to `SUGGESTION_CANDIDATES = 200` candidates, then at most `SUGGESTION_SCAN_LIMIT = 60`
+  priced-sibling checks or `SUGGESTION_SECONDS = 0.5` of wall clock (`time.monotonic()`), then
+  the matches are deduped with `_search_duplicate_key`.
+- Ranking: exact brand match, then brand prefix, then shorter name.
+- Each item: `id, name, brand, strength, form, pack, price, price_per_unit, unit,
+  price_is_current, price_label` (`"Catalog price"` when the price is not a current listing).
+- `_priced_option_cache` memoises the priced-sibling check per medicine id in-process.
+- Two indexes are created by `ensure_catalog_schema()` (and by the ETL): `idx_search_norm`
+  (prefix match; without it SQLite prefers a full scan) and `idx_group_price`
+  (`strength COLLATE NOCASE, dosage_form COLLATE NOCASE, price, composition_complete`) — the
+  `lower(col)=lower(?)` form of that predicate used the index too poorly.
+
+### UI (`templates/index.html`, `templates/results.html`, `static/js/app.js`, `static/css/style.css`)
+- Both search boxes have the dropdown: the home hero and the results-page toolbar. The
+  results-page form carries `data-suggest-inline`, so choosing an item runs the in-page search
+  (the form emits `medfinder:search` and `setupSearchPage` calls `runSearch`) instead of
+  navigating; the home hero navigates to `/search?q=<name>`.
+- The input is a combobox (`role=combobox`, `aria-expanded`, `aria-controls`,
+  `aria-activedescendant`); the listbox is `<div class="search-suggest" role="listbox" hidden>`
+  inside the form (`#heroSuggestions`, `#resultsSuggestions`).
+- Focusing an empty box fetches the starter list; every keystroke fetches after a 220 ms
+  debounce, with a stale-response guard. The pending debounce is cancelled when an item is
+  chosen or a search is submitted (`debounce()` now returns a `.cancel()`), otherwise the panel
+  reopened a moment after the click.
+- ArrowUp/ArrowDown move `aria-selected`, Escape closes and keeps the typed text
+  (`preventDefault`, otherwise `type=search` clears the field), Enter opens the active item or
+  runs the normal search.
+- `.hero-search` and `.search-toolbar` need `z-index: 5` (and `position: relative`); without it
+  the panel sits under the cards, because the `.glass` cards are painted later in the document.
+- On the results page the live-search debounce (280 ms, `>= 2` chars) is cancelled when a
+  suggestion is chosen, so the in-page search runs once.
+
+### Measured on `database/medfinder.db`
+- 348,237 medicines, 270,803 complete, 269,246 with a matchable composition; 42,577 restricted;
+  226,669 eligible; **190,850 (84.2%)** have at least one priced same-composition product.
+  Zero possible saving claims (only 6 rows carry a current listing price).
+- Warm responses: empty `q` 46 ms (8 starter items), `m` 79 ms, `dolo` 79 ms, `metformin` 15 ms
+  (empty: brands start with `met`, not `metformin`).
+- Browser-verified (viewport 640 px wide): focusing the empty hero box lists the 8 starter
+  medicines with pack, per-unit price and "Catalog price"; typing `m` narrows the list to eight
+  `M*` medicines only (`M2Day 4 Tablet`, …); ArrowDown+Enter opens
+  `/search?q=Met%20400mg%20Tablet`. On `/search` the toolbar shows the same list, typing `m`
+  narrows it, and clicking an item runs the in-page search (one navigation entry, 1 result)
+  without reloading. `metformin` lists nothing and Enter still searches (20 results); Escape
+  closes the panel and keeps the typed text.
+- Tests: `test_search_suggestions.py` (7) — priced sibling required, per-unit/provenance
+  fields, price without pack size is not a comparison, warfarin never suggested, single-letter
+  prefix matches, unknown query returns [], empty/whitespace query returns the starter list in
+  seed order, a fixture with no seed brand returns no starter items.
+
+### Caveats
+- A suggested medicine needs a priced *sibling*; products that exist only once in the catalog,
+  or whose composition is incomplete, are never listed.
+- Prices are dataset prices unless `price_checked_at` is set, so the label reads
+  "Catalog price" (never a saving).
+- The prefix match is by name/brand, so an ingredient word (`metformin`) suggests nothing even
+  though the results page finds products by composition.
+- The starter list is a fixed seed list, so it shows one item per resolvable seed brand (8 today)
+  rather than a ranking of the whole catalog.
+- `idx_group_price` is a partial-order index: it serves `strength`/`dosage_form` lookups in
+  that column order only.
+- The first request on a database without the two indexes builds them (several seconds).
+
+Files: `backend/services/medicine_service.py`, `backend/routes/medicine_routes.py`,
+`backend/services/drug_catalog_service.py`, `etl/build_database.py`, `templates/index.html`,
+`templates/results.html`, `static/js/app.js`, `static/css/style.css`, `templates/base.html`,
+`test_search_suggestions.py` (new).
+
 ## How to run
 
 ```bat
@@ -429,6 +759,15 @@ venv\Scripts\python.exe -m backend.app
 
 App runs at http://127.0.0.1:5000. Restart it after Python changes; the database is read live.
 
+Repair manufacturer names glued onto ingredients (re-run after every `etl.build_database`):
+
+```bat
+venv\Scripts\python.exe -m etl.repair_ingredient_prefixes
+venv\Scripts\python.exe -m etl.repair_ingredient_prefixes --apply
+```
+
+Dry run by default; `--apply` rewrites `medicine_ingredients`, `composition` and `product_key`.
+
 Optional DrugSetu enrichment (fills missing composition, pack size and MRP):
 
 ```bat
@@ -438,6 +777,29 @@ venv\Scripts\python.exe -m backend.app
 
 The key is read from the environment at lookup time; no key is committed. Without it the
 background enricher does nothing.
+
+Fill missing compositions from the free DrugDB catalog (resumable, no key required):
+
+```bat
+venv\Scripts\python.exe -m etl.backfill_compositions --status
+venv\Scripts\python.exe -m etl.backfill_compositions --sample 60 --dry-run
+venv\Scripts\python.exe -m etl.backfill_compositions
+```
+
+`--dry-run` looks up and matches but writes nothing and leaves the cursor alone. An optional
+`DRUGDB_API_KEY` is sent as `X-Api-Key`; without it the endpoint still answers.
+
+Import the Jan Aushadhi (PMBJP) reference price list (download the PDF from the official
+site by hand; no key required):
+
+```bat
+venv\Scripts\python.exe -m etl.import_jan_aushadhi --pdf path\to\list.pdf --edition 2025 --dry-run
+venv\Scripts\python.exe -m etl.import_jan_aushadhi --pdf path\to\list.pdf --edition 2025
+venv\Scripts\python.exe -m etl.import_jan_aushadhi --status
+```
+
+`--edition-date YYYY-MM-DD` records the list date; without it the reference price has no
+observation date and cannot satisfy a freshness check.
 
 Prescription OCR additionally needs Tesseract and the Python bindings:
 
@@ -565,3 +927,177 @@ auditing the UI against Vercel's Web Interface Guidelines. These changes are com
 Files: `static/css/style.css`, `static/js/app.js`, `templates/base.html`,
 `templates/index.html`, `templates/results.html`, `templates/scan_medicine.html`,
 `templates/assistant.html`, `templates/disease_guidance.html`, `.qoder/skills/` (untracked).
+
+## Update — composition backfill + DrugDB v1 API (2026-11-10, uncommitted)
+
+Goal: close the missing-composition gap with the free catalog, at scale and resumably.
+
+### Blocker found and fixed: DrugDB changed its API
+- `https://drugdb.in/search?type=medicine&detail=full` now returns the React shell (HTML), so
+  `response.json()` raised and every DrugDB call failed — search fallback, on-demand composition
+  enrichment, and the new backfill.
+- DrugDB publishes a documented API: `GET /v1/search?q=&type=drug&limit=&offset=`, plus
+  `/v1/generics`, `/v1/uses?q=`, `/v1/products/{id}`. An optional key is sent as `X-Api-Key`
+  (read from `DRUGDB_API_KEY`).
+- The public endpoint answers without a key; `max_results` was 120 in probes.
+
+### Client changes (`backend/services/drug_catalog_service.py`)
+- `_fetch_records()` calls `/v1/search` with `type=drug`, raises `ValueError` on a non-JSON body
+  (so the HTML shell is a readable failure, not a decode crash).
+- `_map_record()` maps the flat v1 rows: `composition` (already `Paracetamol (650mg) + ...`),
+  `dosage_form`, `packaging` → `pack_size`, `product_id` → `api_record_id`, image URL. The brand
+  comes from the product title (`_title_brand_phrase`). Price stays NULL and `mrp` is not mapped,
+  because a catalogue MRP is not a retail listing price.
+- `DRUGDB_SOURCE` is now `DrugDB · HealthPilot India drug catalog`. Rows saved earlier keep the
+  old NRCeS label; the composition/brand/strength dedupe branch still recognises them.
+- Deleted the NRCeS-only mappers (`_component_strength`, `_category`) and their unit tables.
+
+### Enrichment split (`drug_catalog_service.py`)
+- New `find_composition_record(medicine)` does the lookup and matching without writing, and lets
+  transport errors escape so a caller can tell an outage from a miss.
+- `enrich_medicine_composition(medicine, use_cache=True, raise_errors=False)` keeps its behaviour
+  for the app; backfills pass `use_cache=False` (the cursor owns progress) and `raise_errors=True`.
+
+### Backfill (`etl/backfill_compositions.py`, new)
+- Targets rows with `composition_complete = 0` and a brand (77,435 today; no row lacks a brand).
+- Keyset pagination by id; the cursor is written to a new table `backfill_state`
+  (`composition:v1`) after every non-error row, so a stop resumes at the next medicine.
+- `--sample N` (seeded, does not move the cursor), `--limit N`, `--dry-run`, `--status`, `--reset`.
+- Minimum `--delay` of 0.5 s (default 2 s); five consecutive failures abort and keep the cursor
+  before the failing row.
+- Only rows the catalog can match are touched: same brand, same dosage form, same strength tokens,
+  and an unambiguous composition.
+
+### Measured (2026-11-10)
+- 72 sampled incomplete rows → 56 filled (78%): 12-row seed-0 sample 92%, 60-row seed-1 sample 75%.
+  At 2.3 s/row the full 77,435-row pool is about 49 hours.
+- Real write verified on id 139030 (`Isopreg 5mg/ml Injection`): composition
+  `Isoxsuprine (5mg)`, `composition_complete = 1`, recomputed `product_key`, one
+  `medicine_ingredients` row, `api_source`/`api_record_id`/`api_fetched_at` filled. The sample run
+  left the cursor untouched.
+- Search fallback works again: `Imik 500` returns two catalog products, `Nofemol 650` and a
+  nonsense query return nothing.
+- Tests: `test_drug_catalog_client.py` (7, new) pins the v1 shape, the `X-Api-Key` header and the
+  non-JSON error; `test_backfill_compositions.py` (7, new) covers resume, dry run, reset, sample
+  determinism and the error abort. Focused suite: 52 tests pass.
+
+### Caveats
+- Strength matching compares numeric tokens only, so a `5mg/ml` row can receive a `5mg`
+  composition. Matches still require the same dosage form, and the composition text keeps the
+  catalog's wording, but per-ml concentrations are not preserved.
+- The v1 endpoint is undocumented in this repo (only observed); a payload change breaks
+  `_map_record` and the client tests are the guard.
+- `backend/services/india_medicine_api.py` (the `/api/live-alternatives` endpoint) still calls the
+  dead `/search` endpoint and now answers "temporarily unavailable". Not fixed in this change.
+- The backfill never fills pack size or MRP; catalog rows only get a pack size when
+  `save_catalog_medicine` runs, and MRP is not stored at all.
+
+Files: `backend/services/drug_catalog_service.py`, `etl/backfill_compositions.py` (new),
+`test_backfill_compositions.py` (new), `test_drug_catalog_client.py` (new), `AGENTS.md`.
+
+## Update — OCR junk filter + fuzzy fallback (2026-11-11, uncommitted)
+
+Goal: read garbled printed brand names that the literal search misses, without ever
+presenting a guessed medicine as a confirmed one.
+
+### Matching (`backend/ocr_service.py`)
+- `_HEADER_WORDS` expanded (clinic/patient/diagnosis/degree/address vocabulary). Degree
+  abbreviations stay conservative: `md`/`ms`/`mb` are excluded so brands such as
+  `Vomikind MD` are not dropped.
+- `_ADDRESS_UNIT` treats `12 MG Road`, `5 ML Road`, etc. as an address even though the
+  strength regex matches the unit; `_looks_like_header` uses it before deciding the line has
+  a dose.
+- `_fuzzy_lookup()` is new and runs only when the literal path finds no row:
+  - candidates are brands sharing the first three letters (`LIMIT 400`), scored with
+    rapidfuzz `fuzz.WRatio`;
+  - `FUZZY_CUTOFF = 92` (88 scored 43% wrong in calibration), `FUZZY_MIN_GAP = 3`;
+  - the printed line must carry a strength or a dosage form, and the candidate must match
+    the strength (column or in the product name) and the form;
+  - the best candidate must beat every other brand; a tie is rejected as ambiguous.
+- `_match_token()` now returns `(row, match_type, score)`; fuzzy hits are `possible` with
+  the WRatio score, literal hits stay `exact`/`partial` with a null score. Results are
+  cached per token/strength/form key.
+- Literal hits must contain the printed token as a whole word (`\bPramod\b`), because the
+  old substring match turned a signature line `Pramod` into `Pramodep 50mg Tablet` and
+  `Biclav DS` into `Abiclav`/`Nabiclav`. Ingredient-only hits contain no printed word, so
+  a generic-name line (`Paracetamol 650`) is now reported as unmatched instead of being
+  mapped to an arbitrary brand.
+- When two printed words name the product (`Ibugesic Plus`), the second word is a ranking
+  hint: products containing it win, and among those the one adding the fewest extra words
+  wins (`Ibugesic Plus Tablet` over `IBUgesic Plus NF`).
+- A line with no strength and no dosage form is matched only by a whole-word brand of five
+  or more letters. This stops `Tel.: 2261594698` matching `Tel 40mg Tablet` and clinic
+  hours `Mon to Sat 10-1, 5-8` matching `Mon 10mg Tablet`, while a bare brand list line
+  (`Ibugesic Plus`, `Betadine Gargle`) still resolves.
+- `_NAME_TOKEN` accepts three-letter words (`PAN`), with dosage abbreviations added to
+  `_STOPWORDS` so `BD`/`TDS`/`SYR` are not looked up.
+- A one-word medicine line that cannot be matched (`Cap Biclav DS`) is now listed under
+  "Read but not matched" instead of disappearing: the unmatched filter accepts a line when
+  it carries a dosage form.
+
+### UI (`static/js/app.js`, `static/css/style.css`, `templates/base.html`)
+- `possible` matches render as `Close match — verify` with an orange `.match-badge.possible`;
+  `exact` stays `Name match`, everything else `Possible match`.
+- `.detected-list > div > .min-grow` is a grid so name, form, dosage and printed line stack
+  instead of running together.
+- Static asset version is `v=20261111-2`.
+
+### Measured (223 real brands, one-character OCR error, true strength + form context)
+- Before the whole-word rule, the literal path matched 32 garbled tokens and half of them
+  were fragments (`Zevace` -> `Zevacef`, `Biclav` -> `Abiclav`).
+- Now: literal 5 matched (3 correct, 2 plausible truncations), fuzzy adds 58 (54 correct,
+  4 wrong). Total 63 matched, 57 correct = 90% precision, versus 67/87 = 77% before.
+- 46 letterhead words paired with `500mg Tablet`: 7 false hits at the old cutoff 88 without
+  the gap/context gates, 1 at the new settings (`advice` -> `Advicef 500mg Tablet`, both a
+  real brand and a word in the header list).
+- End-to-end image through `/api/ocr`: `Tab Augmentn 625 mg 1-0-1 after meals for 5 days`
+  -> `Augmentin 625 Duo Tablet`, `possible`, score 94.1, strength ok, dosage parsed;
+  `Tab Pan 40 mg 1-0-0 before breakfast` -> `PAN 40 Tablet`, `exact`; clinic/patient/address
+  lines ignored. Browser-verified on `/scanner` with no console errors.
+- Letterhead image (`Dr. Pramod Balakrishnan`, `Halleys Tower, MG Road`, a bare `Pramod`
+  line, `Tab Ibugesic Plus 1-0-1`, `Cap Biclav DS 1-0-1`): no `Pramodep`/`Abiclav` match,
+  `Ibugesic Plus` -> `IBUgesic Plus Tablet`, `Biclav DS` listed under "Read but not
+  matched"; status reads "2 medicines matched and 1 printed line not matched".
+
+### Tests
+- `test_prescription_ocr.py` adds: header/address filtering, garbled brand as `possible`
+  with a score, fuzzy requiring strength or form context, ambiguous two-brand tie rejected,
+  three-letter brand (`PAN 40`) read, doctor name not matched inside `Pramodep`, `Biclav`
+  not matched inside `Nabiclav` (and listed unmatched), second printed word preferring the
+  matching product, phone/clinic-hours lines ignored, bare brand line still matched. Full
+  focused suite: 62 tests pass.
+
+### Caveats
+- A printed generic (`Tab Paracetamol 650 mg`) can still resolve to a plain-name catalog row,
+  for example `Paracetamol 500mg Tablet` when no 650 mg row exists. That result is returned as
+  `possible` with `strength_match: false` and the badge `Possible match — check strength`; it
+  is never presented as a confirmed name match.
+- There is no image cropping. The header is filtered line by line instead, because a fixed
+  top-25% crop cuts the first medicine line on dense handwritten slips and cannot apply to
+  text-layer PDFs.
+- Fuzzy recovery is intentionally narrow: 3-letter prefix and cutoff 92 recover about a
+  quarter of single-character brand typos; a typo in the first three letters still misses.
+- A reading within three points of two brands is dropped rather than guessed; it appears in
+  "Read but not matched" so the user can search manually.
+- `possible` matches still need the printed strength to be recorded in the catalog row;
+  rows with no recorded strength are never accepted by the fuzzy pass.
+
+Files: `backend/ocr_service.py`, `static/js/app.js`, `static/css/style.css`,
+`templates/base.html`, `test_prescription_ocr.py`, `AGENTS.md`.
+
+### Strength-conflict downgrade (2026-11-11)
+- `_extract_medicines()` downgrades `match_type` from `exact` to `possible` whenever
+  `strength_match` is `False`, so a name-only hit whose printed strength contradicts the row
+  is never returned as a confirmed match. Ranking, `_strength_state()` and the SQL are
+  unchanged.
+- Measured on the real database: `Tab Paracetamol 650 mg 1-0-1` -> `Paracetamol 500mg Tablet`
+  (id 257284), `match_type: possible`, `strength_match: false`.
+- `renderDetectedMedicine()` (`static/js/app.js`) renders `Possible match — check strength`
+  with the `.match-badge.warning` style for any row with `strength_match === false`; the
+  separate "Printed strength differs" chip is gone.
+- `test_prescription_ocr.py` gains `test_conflicting_printed_strength_downgrades_an_exact_name_match`
+  and a plain `Paracetamol 500mg Tablet` fixture row. 21 OCR tests pass; 31 tests across
+  `test_api_fallback`, `test_api_fallback_cache`, `test_clean`, `test_drug_catalog_client`
+  and `test_backfill_compositions` pass.
+- Verified with a rendered image through `/api/ocr` and in the browser on `/scanner`: the
+  detected row shows the warning badge and "1 medicine matched."; asset version `20261111-3`.

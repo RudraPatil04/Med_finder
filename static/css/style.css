@@ -310,11 +310,76 @@ p {
 
 .hero-search {
     max-width: 780px;
+    position: relative;
+    z-index: 5;
+}
+
+.search-suggest {
+    position: absolute;
+    top: calc(100% + 10px);
+    left: 8px;
+    right: 8px;
+    z-index: 60;
+    display: grid;
+    gap: 2px;
+    max-height: min(360px, 60vh);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 6px;
+    border: 1px solid var(--border);
+    border-radius: 18px;
+    background: var(--card);
+    box-shadow: var(--shadow-soft);
+}
+
+.search-suggest button {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 2px 12px;
+    align-items: center;
+    width: 100%;
+    padding: 10px 12px;
+    border: 0;
+    border-radius: 12px;
+    background: transparent;
+    color: var(--text);
+    text-align: left;
+    font: inherit;
+    cursor: pointer;
+    touch-action: manipulation;
+}
+
+.search-suggest button:hover,
+.search-suggest button[aria-selected="true"] {
+    background: rgba(15, 118, 110, 0.08);
+}
+
+.search-suggest .suggest-name {
+    font-weight: 600;
+}
+
+.search-suggest .suggest-price {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--primary);
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+.search-suggest .suggest-meta {
+    grid-column: 1 / -1;
+    font-size: 12px;
+    color: var(--muted);
 }
 
 .search-toolbar,
 .disease-search {
     max-width: none;
+}
+
+.search-toolbar {
+    position: relative;
+    z-index: 5;
 }
 
 .hero-search input,
@@ -1250,6 +1315,11 @@ input[type="range"] {
     align-items: flex-start;
 }
 
+.detected-list > div > .min-grow {
+    display: grid;
+    gap: 2px;
+}
+
 .detected-actions {
     display: flex;
     flex-wrap: wrap;
@@ -1277,6 +1347,11 @@ input[type="range"] {
 .match-badge.partial {
     color: var(--amber);
     background: #fef3c7;
+}
+
+.match-badge.possible {
+    color: #9a3412;
+    background: #ffedd5;
 }
 
 .match-badge.warning {
@@ -2413,6 +2488,32 @@ input[type="range"] {
 
 .cheaper-price .savings-badge {
     font-size: 11px;
+}
+
+.cheaper-reference {
+    margin-top: 18px;
+    padding-top: 14px;
+    border-top: 1px dashed #a7f3d0;
+}
+
+.cheaper-reference .eyebrow {
+    margin: 0 0 4px;
+}
+
+.cheaper-reference-note {
+    margin: 0 0 12px;
+    font-size: 12px;
+    color: var(--muted);
+}
+
+.cheaper-item-static {
+    cursor: default;
+}
+
+.cheaper-item-static:hover {
+    border-color: var(--border);
+    box-shadow: none;
+    transform: none;
 }
 
 .comparison-footer {

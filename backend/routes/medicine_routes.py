@@ -10,6 +10,7 @@ from flask import Blueprint, jsonify, request
 
 from backend.services.medicine_service import (
     search_medicines,
+    suggest_functional_medicines,
     get_medicine,
     search_by_brand,
     search_by_category,
@@ -57,6 +58,24 @@ def search():
         "success": True,
         "count": len(medicines),
         "data": [dict(row) for row in medicines]
+    })
+
+
+# ==========================================================
+# Search Suggestions
+# ==========================================================
+
+@medicine_bp.route("/search-suggestions", methods=["GET"])
+def search_suggestions():
+
+    keyword = request.args.get("q", "").strip()
+
+    suggestions = suggest_functional_medicines(keyword)
+
+    return jsonify({
+        "success": True,
+        "count": len(suggestions),
+        "data": suggestions
     })
 
 

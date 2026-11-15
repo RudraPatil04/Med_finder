@@ -49,11 +49,162 @@
 
     function setupGlobalSearch() {
         document.querySelectorAll("[data-global-search]").forEach(function (form) {
+            const input = form.querySelector("input[name='q']");
+            const box = form.querySelector(".search-suggest");
+            let items = [];
+            let activeIndex = -1;
+            let requestId = 0;
+
+            if (!input || !box) return;
+
+            function hideSuggestions() {
+                items = [];
+                activeIndex = -1;
+                requestId += 1;
+                box.hidden = true;
+                box.innerHTML = "";
+                input.setAttribute("aria-expanded", "false");
+                input.removeAttribute("aria-activedescendant");
+            }
+
+            function openSuggestion(item) {
+                loadSuggestionsSoon.cancel();
+                if (form.hasAttribute("data-suggest-inline")) {
+                    input.value = item.name;
+                    hideSuggestions();
+                    form.dispatchEvent(new CustomEvent("medfinder:search", {
+                        detail: { query: item.name },
+                    }));
+                    return;
+                }
+                window.location.href = "/search?q=" + encodeURIComponent(item.name);
+            }
+
+            function setActive(index) {
+                const buttons = box.querySelectorAll("button[role='option']");
+                activeIndex = index;
+                buttons.forEach(function (button, position) {
+                    button.setAttribute("aria-selected", String(position === index));
+                });
+                if (buttons[index]) {
+                    input.setAttribute("aria-activedescendant", buttons[index].id);
+                    buttons[index].scrollIntoView({ block: "nearest" });
+                } else {
+                    input.removeAttribute("aria-activedescendant");
+                }
+            }
+
+            function renderSuggestions(list) {
+                items = list;
+                if (!list.length) {
+                    hideSuggestions();
+                    return;
+                }
+                box.innerHTML = list.map(function (item, index) {
+                    const meta = [item.form, item.strength, item.pack].filter(Boolean).join(" · ");
+                    const price = item.price
+                        ? "Rs. " + formatPrice(item.price)
+                            + (item.price_per_unit && item.unit
+                                ? " (Rs. " + formatUnitPrice(item.price_per_unit) + "/" + escapeHtml(item.unit) + ")"
+                                : "")
+                        : "";
+                    return '<button type="button" role="option" id="heroSuggestion' + index + '"'
+                        + ' aria-selected="false" data-index="' + index + '">'
+                        + '<span class="suggest-name">' + escapeHtml(item.name) + "</span>"
+                        + '<span class="suggest-price">' + price + "</span>"
+                        + '<span class="suggest-meta">' + escapeHtml(meta)
+                        + (item.price_label ? " · " + escapeHtml(item.price_label) : "") + "</span>"
+                        + "</button>";
+                }).join("");
+                box.hidden = false;
+                input.setAttribute("aria-expanded", "true");
+                activeIndex = -1;
+            }
+
+            function submitSearch() {
+                if (activeIndex >= 0 && items[activeIndex]) {
+                    openSuggestion(items[activeIndex]);
+                    return;
+                }
+                loadSuggestionsSoon.cancel();
+                const query = input.value.trim();
+                if (form.hasAttribute("data-suggest-inline")) {
+                    hideSuggestions();
+                    if (query) {
+                        form.dispatchEvent(new CustomEvent("medfinder:search", {
+                            detail: { query: query },
+                        }));
+                    }
+                    return;
+                }
+                window.location.href = query ? "/search?q=" + encodeURIComponent(query) : "/search";
+            }
+
             form.addEventListener("submit", function (event) {
                 event.preventDefault();
-                const input = form.querySelector("input[name='q']");
-                const query = input ? input.value.trim() : "";
-                window.location.href = query ? "/search?q=" + encodeURIComponent(query) : "/search";
+                submitSearch();
+            });
+
+            // Keep focus in the input so the click lands before any blur handler.
+            box.addEventListener("mousedown", function (event) {
+                event.preventDefault();
+            });
+            box.addEventListener("click", function (event) {
+                const button = event.target.closest("button[data-index]");
+                if (!button) return;
+                const item = items[Number(button.dataset.index)];
+                if (item) openSuggestion(item);
+            });
+
+            function loadSuggestions(query) {
+                const current = ++requestId;
+                fetchJson("/api/search-suggestions?q=" + encodeURIComponent(query)).then(function (data) {
+                    if (current !== requestId || !input.matches(":focus")) return;
+                    if (!data || !data.success) {
+                        hideSuggestions();
+                        return;
+                    }
+                    renderSuggestions(data.data || []);
+                });
+            }
+
+            // Shows recommendations before anything is typed, then narrows them
+            // to the typed prefix (a single letter is enough).
+            input.addEventListener("focus", function () {
+                if (!items.length) loadSuggestions(input.value.trim());
+            });
+
+            const loadSuggestionsSoon = debounce(function () {
+                loadSuggestions(input.value.trim());
+            }, 220);
+
+            input.addEventListener("input", loadSuggestionsSoon);
+
+            input.addEventListener("keydown", function (event) {
+                if (event.key === "Escape") {
+                    if (items.length) {
+                        event.preventDefault();
+                        hideSuggestions();
+                    }
+                    return;
+                }
+                if (event.key === "Enter") {
+                    event.preventDefault();
+                    submitSearch();
+                    return;
+                }
+                if (!items.length) return;
+                if (event.key === "ArrowDown") {
+                    event.preventDefault();
+                    setActive(activeIndex >= items.length - 1 ? 0 : activeIndex + 1);
+                } else if (event.key === "ArrowUp") {
+                    event.preventDefault();
+                    setActive(activeIndex <= 0 ? items.length - 1 : activeIndex - 1);
+                }
+            });
+
+            document.addEventListener("click", function (event) {
+                if (!box.hidden && !form.contains(event.target)) hideSuggestions();
             });
         });
     }
@@ -117,10 +268,17 @@
             runSearch(input.value.trim());
         });
 
-        input.addEventListener("input", debounce(function () {
+        form.addEventListener("medfinder:search", function (event) {
+            const query = event.detail && event.detail.query ? event.detail.query : "";
+            runSearchSoon.cancel();
+            runSearch(query.trim());
+        });
+
+        const runSearchSoon = debounce(function () {
             const query = input.value.trim();
             if (query.length >= 2) runSearch(query);
-        }, 280));
+        }, 280);
+        input.addEventListener("input", runSearchSoon);
 
         document.querySelectorAll("[data-view]").forEach(function (button) {
             button.addEventListener("click", function () {
@@ -236,7 +394,10 @@
         const options = (data.same_composition_options || []).filter(function (item) {
             return Number(item.price || 0) > 0;
         });
-        if (!cheaper.length && !options.length) return;
+        const referenceOptions = (data.reference_price_options || []).filter(function (item) {
+            return Number(item.price || 0) > 0;
+        });
+        if (!cheaper.length && !options.length && !referenceOptions.length) return;
 
         const priceKnown = cheaper.length > 0;
         const referencePriceMissing = !data.reference_price_available;
@@ -254,7 +415,7 @@
                     ? 'This price is a current listing, but no same-composition product with a current listing price is cheaper. The options below carry old, unverified catalog prices, so no saving is claimed.'
                     : 'The price recorded for this medicine is an old catalog price, not a confirmed current listing, so no saving is claimed. These products share the recorded ingredients, strength and form; their catalog prices are unverified and they are not verified interchangeable.';
         const items = priceKnown ? cheaper : options;
-        panel.innerHTML = '<div class="cheaper-head">' +
+        const catalogHtml = !items.length ? '' : '<div class="cheaper-head">' +
             '<div><p class="eyebrow">' + eyebrow + '</p>' +
             '<h2>' + (priceKnown ? 'Cheaper options for ' : 'Same-composition catalog options for ') +
             escapeHtml(medicine.medicine_name || medicine.name || 'this medicine') + '</h2>' +
@@ -276,6 +437,32 @@
                     (unitLabel ? '<small>' + escapeHtml(unitLabel) + '</small>' : '') +
                     '</div></a>';
             }).join('') + '</div>';
+
+        // A published generic list price prices a different product. It is shown as a
+        // price reference only, so it never claims a saving over the searched brand.
+        const referenceHtml = !referenceOptions.length ? '' : '<div class="cheaper-reference">' +
+            '<p class="eyebrow">Jan Aushadhi list price</p>' +
+            '<p class="cheaper-reference-note">Published generic list price for a product with the same recorded ingredients, strength and form. It is not a listing of this brand, and it does not show that the products can be substituted.</p>' +
+            '<div class="cheaper-list">' + referenceOptions.slice(0, 3).map(function (item) {
+                const unit = item.unit || 'unit';
+                const unitLabel = item.price_per_unit
+                    ? 'Rs. ' + formatUnitPrice(item.price_per_unit) + ' per ' + unit
+                    : '';
+                const observed = formatDateValue(item.observed_at);
+                const dateLabel = observed
+                    ? 'List dated ' + observed + (item.price_is_current ? '' : ' (over a year old)')
+                    : (item.edition ? 'Edition ' + item.edition + ', list date not published' : 'List date not published');
+                return '<div class="cheaper-item cheaper-item-static">' +
+                    '<div class="cheaper-copy"><strong>' + escapeHtml(item.product_name || 'Generic product') + '</strong>' +
+                    '<small>' + escapeHtml(item.composition || 'Same recorded composition') + ' · ' + escapeHtml(item.pack || 'Pack unknown') + '</small>' +
+                    '<small>' + escapeHtml(dateLabel) + '</small></div>' +
+                    '<div class="cheaper-price"><span>Rs. ' + formatPrice(item.price) + '</span>' +
+                    (unitLabel ? '<small>' + escapeHtml(unitLabel) + '</small>' : '') +
+                    '<small>Jan Aushadhi list price</small>' +
+                    '</div></div>';
+            }).join('') + '</div></div>';
+
+        panel.innerHTML = catalogHtml + referenceHtml;
         panel.hidden = false;
     }
 
@@ -690,17 +877,21 @@
         const printed = item.source_line ? "Printed: " + item.source_line : "Printed line unavailable";
         const medicineId = item.medicine_id || item.id;
         const exact = item.match_type === "exact";
-        const strengthNote = item.strength_match === false
-            ? '<span class="match-badge warning">Printed strength differs</span>'
-            : '';
+        const close = item.match_type === "possible";
+        const strengthDiffers = item.strength_match === false;
+        const matchLabel = strengthDiffers
+            ? "Possible match — check strength"
+            : exact ? "Name match" : close ? "Close match — verify" : "Possible match";
+        const badgeClass = strengthDiffers
+            ? "warning"
+            : exact ? "exact" : close ? "possible" : "partial";
         return '<div class="detected-item" data-detected><span class="feature-icon soft"><span class="icon icon-pill"></span></span>' +
             '<div class="min-grow"><strong>' + escapeHtml(name) + '</strong>' +
             (details ? '<small>' + escapeHtml(details) + '</small>' : '') +
             '<small>' + escapeHtml(dosage) + '</small>' +
             '<small class="ocr-source">' + escapeHtml(printed) + '</small></div>' +
             '<div class="detected-actions">' +
-            '<span class="match-badge ' + (exact ? "exact" : "partial") + '">' + (exact ? "Name match" : "Possible match") + '</span>' +
-            strengthNote +
+            '<span class="match-badge ' + badgeClass + '">' + matchLabel + '</span>' +
             (medicineId ? '<a class="btn btn-outline btn-sm" href="/medicine/' + encodeURIComponent(medicineId) + '">View</a>' : '') +
             '<a class="btn btn-outline btn-sm" href="/search?q=' + encodeURIComponent(item.matched_text || name) + '">Search</a>' +
             '<button class="btn btn-quiet btn-sm" type="button" data-remove-detected>Remove</button>' +
@@ -802,6 +993,12 @@
         return unitPriceFormatter.format(Number(value || 0));
     }
 
+    function formatDateValue(value) {
+        if (!value) return "";
+        const parsed = new Date(value);
+        return Number.isNaN(parsed.getTime()) ? "" : dateFormatter.format(parsed);
+    }
+
     function escapeHtml(value) {
         return String(value == null ? "" : value)
             .replace(/&/g, "&amp;")
@@ -813,13 +1010,19 @@
 
     function debounce(fn, wait) {
         let timeout;
-        return function () {
+        function debounced() {
             const args = arguments;
             clearTimeout(timeout);
             timeout = setTimeout(function () {
+                timeout = null;
                 fn.apply(null, args);
             }, wait);
+        }
+        debounced.cancel = function () {
+            clearTimeout(timeout);
+            timeout = null;
         };
+        return debounced;
     }
 
     // Price Comparison Feature
@@ -943,8 +1146,49 @@
         const unverifiedMatches = data && Array.isArray(data.unverified_matches) ? data.unverified_matches : [];
         const sameComposition = data && Array.isArray(data.same_composition_alternatives) ? data.same_composition_alternatives : [];
         const sameOptions = data && Array.isArray(data.same_composition_options) ? data.same_composition_options : [];
+        const referenceOptions = data && Array.isArray(data.reference_price_options) ? data.reference_price_options.filter(function (item) {
+            return Number(item.price || 0) > 0;
+        }) : [];
         const sameIds = new Set(sameComposition.map(function (item) { return String(item.id); }));
         const optionIds = new Set(sameOptions.map(function (item) { return String(item.id); }));
+        const renderReferencePrices = function () {
+            if (!referenceOptions.length) return '';
+            return '<section class="comparison-section reference-price-section">' +
+                '<h3>Jan Aushadhi list price for the same composition <span class="count-badge">' + referenceOptions.length + '</span></h3>' +
+                '<p class="disclaimer">A published generic list price for products with the same recorded ingredients, strength and form. It prices a generic product, not this brand, and does not show that the products can be substituted.</p>' +
+                '<div class="substitutes-list">' + referenceOptions.map(function (item) {
+                    const unit = item.unit || 'unit';
+                    const unitLabel = item.price_per_unit
+                        ? 'Rs. ' + formatUnitPrice(item.price_per_unit) + ' per ' + unit
+                        : '';
+                    const observed = formatDateValue(item.observed_at);
+                    const dateLabel = observed
+                        ? 'List dated ' + observed + (item.price_is_current ? '' : ' - over a year old')
+                        : (item.edition ? 'Edition ' + item.edition + ', list date not published' : 'List date not published');
+                    const difference = Number(item.difference_per_unit || 0);
+                    const differenceLabel = !item.reference_price_per_unit || !difference
+                        ? ''
+                        : difference > 0
+                            ? 'Rs. ' + formatUnitPrice(difference) + ' per ' + unit + ' below the recorded price of this product'
+                            : 'Rs. ' + formatUnitPrice(-difference) + ' per ' + unit + ' above the recorded price of this product';
+                    const percent = Number(item.savings_percent || 0);
+                    return '<article class="comparison-item substitute">' +
+                        '<div class="comparison-header"><div class="flex-grow">' +
+                        '<h4>' + escapeHtml(item.product_name || 'Generic product') + '</h4>' +
+                        '<p>' + escapeHtml(item.composition || 'Same recorded composition') + '</p></div>' +
+                        '<div class="comparison-price"><span class="price-large">Rs. ' + formatPrice(item.price) + '</span>' +
+                        (percent > 0 && item.price_is_current
+                            ? '<span class="savings-badge ' + savingsClass(percent) + '">Save ' + percent.toFixed(0) + '%</span>'
+                            : '<span class="comparison-source">List price</span>') +
+                        '</div></div>' +
+                        '<div class="comparison-details">' +
+                        '<span class="badge">' + escapeHtml(item.pack || 'Pack unknown') + '</span>' +
+                        (unitLabel ? '<span class="badge secondary">' + escapeHtml(unitLabel) + '</span>' : '') +
+                        (differenceLabel ? '<span class="comparison-source">' + escapeHtml(differenceLabel) + '</span>' : '') +
+                        '<span class="comparison-source">' + escapeHtml(item.source || 'Jan Aushadhi (PMBJP)') + ' · ' + escapeHtml(dateLabel) + '</span>' +
+                        '</div></article>';
+                }).join('') + '</div></section>';
+        };
         const renderSameComposition = function () {
             if (!sameComposition.length) return '';
             return '<section class="comparison-section same-composition-section">' +
@@ -1040,7 +1284,9 @@
         };
 
         if (!data || !data.success || !data.substitutes || data.substitutes.length === 0) {
-            const title = data && data.comparison_status === "insufficient_product_data"
+            const title = data && data.comparison_status === "restricted_class"
+                ? "Cheaper options are not shown"
+                : data && data.comparison_status === "insufficient_product_data"
                 ? "Product data is incomplete"
                 : data && data.comparison_status === "cheaper_same_composition"
                     ? "Cheaper same-composition options"
@@ -1054,8 +1300,8 @@
             const explanation = data && data.message
                 ? data.message
                 : "No product-specific verified alternatives with recent comparable prices are available.";
-            const sameHtml = renderSameComposition() + renderSameCompositionOptions();
-            const emptyHtml = sameComposition.length || sameOptions.length ? '' : '<div class="empty-state">' +
+            const sameHtml = renderSameComposition() + renderSameCompositionOptions() + renderReferencePrices();
+            const emptyHtml = sameComposition.length || sameOptions.length || referenceOptions.length ? '' : '<div class="empty-state">' +
                 '<span class="feature-icon"><span class="icon icon-package"></span></span>' +
                 '<h3>' + escapeHtml(title) + '</h3>' +
                 '<p>' + escapeHtml(explanation) + '</p>' +
@@ -1138,7 +1384,7 @@
             '</div>' +
             '<div class="comparison-footer">' +
             '<p class="disclaimer"><span class="icon icon-alert-circle"></span> Evidence and recent price checks are shown for each verified result. Ask a pharmacist or prescriber before changing treatment.</p>' +
-            '</div>' + renderSameComposition() + renderSameCompositionOptions() + renderUnverifiedMatches(unverifiedMatches) + renderLiveApiMatches() + renderLivePriceMatches();
+            '</div>' + renderSameComposition() + renderSameCompositionOptions() + renderReferencePrices() + renderUnverifiedMatches(unverifiedMatches) + renderLiveApiMatches() + renderLivePriceMatches();
     };
 
     window.closeComparison = function() {

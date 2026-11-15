@@ -6,9 +6,10 @@
 {% block content %}
 <section class="app-shell search-page">
     <h1 class="sr-only">Search medicines</h1>
-    <form class="search-toolbar glass" id="medicineSearchForm">
+    <form class="search-toolbar glass" id="medicineSearchForm" data-global-search data-suggest-inline>
         <span class="search-icon icon icon-search"></span>
-        <input id="medicineSearchInput" type="search" placeholder="Search by brand, composition, or use…" aria-label="Search medicines" autocomplete="off">
+        <input id="medicineSearchInput" name="q" type="search" placeholder="Search by brand, composition, or use…" aria-label="Search medicines" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="resultsSuggestions">
+        <div class="search-suggest" id="resultsSuggestions" role="listbox" aria-label="Medicines with a working price comparison" hidden></div>
         <div class="view-toggle" role="group" aria-label="View mode">
             <button class="active" type="button" data-view="grid" aria-label="Grid view" aria-pressed="true" title="Grid view"><span class="icon icon-grid"></span></button>
             <button type="button" data-view="list" aria-label="List view" aria-pressed="false" title="List view"><span class="icon icon-list"></span></button>

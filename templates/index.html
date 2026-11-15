@@ -16,7 +16,8 @@
 
         <form class="hero-search glass" data-global-search>
             <span class="search-icon icon icon-search"></span>
-            <input type="search" name="q" placeholder="Search 350,000+ medicines, brands, compositions…" aria-label="Search medicines" autocomplete="off">
+            <input type="search" name="q" placeholder="Search 350,000+ medicines, brands, compositions…" aria-label="Search medicines" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="heroSuggestions">
+            <div class="search-suggest" id="heroSuggestions" role="listbox" aria-label="Medicines with a working price comparison" hidden></div>
             <button class="voice-btn" type="button" aria-label="Voice search" title="Voice search"><span class="icon icon-mic"></span></button>
             <a class="upload-btn" href="/scanner"><span class="icon icon-upload"></span> Prescription</a>
             <button class="btn btn-gradient" type="submit">Search <span class="icon icon-arrow-right"></span></button>

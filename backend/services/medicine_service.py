@@ -9,8 +9,9 @@ Author : Naman
 """
 
 import re
+import time
 
-from backend.database import execute_query
+from backend.database import execute_query, get_connection
 from backend.services.api_cache import (
     ensure_api_search_cache, has_recent_api_search, record_api_search,
 )
@@ -19,7 +20,9 @@ from backend.services.drug_catalog_service import (
     search_catalog, search_pharmeasy_catalog,
 )
 from backend.services.external_api_service import search_rxnorm, save_api_medicine
-from backend.medicine_data import normalize_medication_text, parse_composition
+from backend.medicine_data import (
+    normalize_medication_text, pack_quantity, parse_composition, restricted_reason,
+)
 
 
 SEARCH_CACHE_VERSION = "catalog-v2"
@@ -141,6 +144,180 @@ def _dedupe_search_records(records):
         if new_price and (not current_price or new_price < current_price):
             unique[key] = record
     return list(unique.values())
+
+
+# ============================================================
+# Search Suggestions
+# ============================================================
+
+PRICE_MAX_AGE_DAYS = 30
+SUGGESTION_CANDIDATES = 200
+SUGGESTION_CACHE_LIMIT = 4000
+SUGGESTION_SCAN_LIMIT = 60
+SUGGESTION_SECONDS = 0.5
+# Every seed is a brand or name prefix that the catalog actually records and
+# that resolves to a product with a priced same-composition sibling.
+SUGGESTION_SEEDS = (
+    "dolo", "crocin", "calpol", "combiflam",
+    "augmentin", "azithral", "montek", "zerodol",
+)
+
+# A suggestion must be able to show a priced comparison, so a candidate needs
+# another product with the same recorded ingredients, strength, form and
+# release that also carries a price inside a countable pack.
+_PRICED_OPTION_SQL = """
+SELECT 1 FROM medicines c INDEXED BY idx_group_price
+WHERE c.id != :id AND c.composition_complete = 1
+  AND c.strength = :strength COLLATE NOCASE
+  AND c.dosage_form = :form COLLATE NOCASE
+  AND lower(COALESCE(c.release_type, '')) = :release
+  AND c.price > 0 AND c.pack_size IS NOT NULL AND trim(c.pack_size) != ''
+  AND (SELECT COUNT(*) FROM medicine_ingredients x WHERE x.medicine_id = c.id) = :ingredient_count
+  AND NOT EXISTS (
+      SELECT 1 FROM medicine_ingredients x
+      WHERE x.medicine_id = c.id AND NOT EXISTS (
+          SELECT 1 FROM medicine_ingredients r
+          WHERE r.medicine_id = :id
+            AND r.ingredient_name_norm = x.ingredient_name_norm
+            AND r.ingredient_strength_norm = x.ingredient_strength_norm))
+LIMIT 1
+"""
+
+_priced_option_cache = {}
+
+
+def _has_priced_same_composition(connection, medicine, ingredient_names, ingredient_count):
+    cached = _priced_option_cache.get(medicine["id"])
+    if cached is not None:
+        return cached
+    result = ingredient_count > 0 and connection.execute(_PRICED_OPTION_SQL, {
+        "id": medicine["id"],
+        "strength": medicine["strength"],
+        "form": medicine["dosage_form"],
+        "release": str(medicine["release_type"] or "").casefold(),
+        "ingredient_count": ingredient_count,
+    }).fetchone() is not None
+    if len(_priced_option_cache) >= SUGGESTION_CACHE_LIMIT:
+        _priced_option_cache.clear()
+    _priced_option_cache[medicine["id"]] = result
+    return result
+
+
+def _price_is_current(connection, value):
+    if not value:
+        return False
+    return connection.execute(
+        "SELECT 1 WHERE datetime(?) >= datetime('now', ?) LIMIT 1",
+        (value, f"-{PRICE_MAX_AGE_DAYS} days"),
+    ).fetchone() is not None
+
+
+def suggest_functional_medicines(keyword, limit=8):
+    """Medicines whose page will actually show a priced same-composition comparison.
+
+    Type-ahead suggestions must not promise comparisons the database cannot
+    produce, so a medicine is only returned when another product with the same
+    recorded ingredients, strength, form and release carries a price and a
+    countable pack size. Restricted classes are never suggested.
+    """
+    ensure_catalog_schema()
+    connection = get_connection()
+    deadline = time.monotonic() + SUGGESTION_SECONDS
+    try:
+        text = (keyword or "").strip()
+        if not text:
+            return _starter_suggestions(connection, limit, deadline)
+        key = normalize_medication_text(text)
+        if not key:
+            return []
+        return _collect_suggestions(connection, key, limit, deadline)
+    finally:
+        connection.close()
+
+
+def _starter_suggestions(connection, limit, deadline):
+    """A short recommendation list shown while the box is still empty."""
+    suggestions = []
+    seen = set()
+    for seed in SUGGESTION_SEEDS:
+        for item in _collect_suggestions(connection, seed, 1, deadline):
+            if item["id"] in seen:
+                continue
+            seen.add(item["id"])
+            suggestions.append(item)
+        if len(suggestions) >= limit:
+            break
+    return suggestions[:limit]
+
+
+def _collect_suggestions(connection, key, limit, deadline):
+    if not key:
+        return []
+    candidates = [dict(row) for row in connection.execute(
+        "SELECT id, medicine_name, brand_name, strength, dosage_form, release_type, "
+        "pack_size, price, price_checked_at "
+        "FROM medicines INDEXED BY idx_search_norm "
+        "WHERE search_norm GLOB ? AND composition_complete = 1 "
+        "LIMIT ?",
+        (key + "*", SUGGESTION_CANDIDATES),
+    )]
+    if not candidates:
+        return []
+    # The typed brand itself should surface before longer names that merely
+    # start with the same letters ("Dolo" before "Dolobak").
+    candidates.sort(key=lambda item: (
+        0 if normalize_medication_text(item["brand_name"]) == key else (
+            1 if normalize_medication_text(item["brand_name"]).startswith(key) else 2),
+        len(item["medicine_name"] or ""),
+        (item["medicine_name"] or "").casefold(),
+    ))
+
+    ingredients = {}
+    placeholders = ",".join("?" * len(candidates))
+    for row in connection.execute(
+        "SELECT medicine_id, ingredient_name_norm FROM medicine_ingredients "
+        f"WHERE medicine_id IN ({placeholders})",
+        [candidate["id"] for candidate in candidates],
+    ):
+        ingredients.setdefault(row["medicine_id"], []).append(row["ingredient_name_norm"])
+
+    suggestions = []
+    seen = set()
+    scanned = 0
+    for medicine in candidates:
+        if scanned >= SUGGESTION_SCAN_LIMIT or time.monotonic() > deadline:
+            break
+        scanned += 1
+        names = ingredients.get(medicine["id"], [])
+        blocked = restricted_reason(medicine, names) is not None
+        if blocked or not _has_priced_same_composition(connection, medicine, names, len(names)):
+            continue
+        duplicate = _search_duplicate_key(medicine)
+        if duplicate in seen:
+            continue
+        seen.add(duplicate)
+        price = float(medicine["price"] or 0)
+        current = price > 0 and _price_is_current(connection, medicine["price_checked_at"])
+        quantity = pack_quantity(medicine["pack_size"])
+        suggestions.append({
+            "id": medicine["id"],
+            "name": medicine["medicine_name"],
+            "brand": medicine["brand_name"],
+            "strength": medicine["strength"],
+            "form": medicine["dosage_form"],
+            "pack": medicine["pack_size"],
+            "price": price if price > 0 else None,
+            "price_per_unit": round(price / quantity[0], 4) if price and quantity else None,
+            "unit": quantity[1] if quantity else None,
+            "price_is_current": current,
+            "price_label": (
+                "Live listing" if current
+                else ("Catalog price" if price > 0 else "No recorded price")
+            ),
+        })
+        if len(suggestions) >= limit:
+            break
+    return suggestions
 
 
 # ============================================================
