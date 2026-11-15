@@ -278,6 +278,171 @@ class RxNormFallbackCacheTests(unittest.TestCase):
         # The stale-priced product is still listed, but without a saving claim.
         self.assertEqual([item["medicine_name"] for item in result["same_composition_options"]], ["Stale cheaper"])
 
+    def _add_reference_price(self, composition_key, observed_at, price=10.0, price_per_unit=1.0, unit="capsule"):
+        connection = sqlite3.connect(self.db_path)
+        try:
+            connection.execute("""CREATE TABLE IF NOT EXISTS reference_prices (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source TEXT NOT NULL,
+                source_edition TEXT,
+                source_url TEXT,
+                drug_code TEXT,
+                generic_name TEXT NOT NULL,
+                composition TEXT,
+                composition_key TEXT NOT NULL,
+                pack_text TEXT,
+                pack_quantity INTEGER,
+                pack_unit TEXT,
+                price_kind TEXT,
+                price_value REAL,
+                price_per_unit REAL,
+                currency TEXT,
+                release_type TEXT,
+                observed_at TEXT,
+                imported_at TEXT
+            )""")
+            connection.execute("""INSERT INTO reference_prices(
+                source, source_edition, generic_name, composition, composition_key, pack_text,
+                pack_quantity, pack_unit, price_kind, price_value, price_per_unit, currency, observed_at
+            ) VALUES ('Jan Aushadhi (PMBJP)', '2025', 'Amoxicillin Capsules IP 500mg', 'Amoxicillin (500mg)',
+                ?, '10''s', 10, ?, 'reference_generic', ?, ?, 'INR', ?)""",
+                (composition_key, unit, price, price_per_unit, observed_at))
+            connection.commit()
+        finally:
+            connection.close()
+
+    def _add_amoxicillin_target(self, price=50, checked=None):
+        key = make_product_key("Target", "Target", "500mg", "Capsule", "Amoxicillin (500mg)", "IR", "10 capsules")
+        connection = sqlite3.connect(self.db_path)
+        try:
+            medicine_id = connection.execute("""INSERT INTO medicines(
+                medicine_name, brand_name, strength, dosage_form, composition, price,
+                release_type, pack_size, composition_complete, price_source,
+                price_checked_at, product_key
+            ) VALUES ('Target', 'Target', '500mg', 'Capsule', 'Amoxicillin (500mg)', ?, 'IR',
+                '10 capsules', 1, ?, ?, ?)""",
+                (price, "fixture" if checked else None, checked, key)).lastrowid
+            connection.execute("""INSERT INTO medicine_ingredients(
+                medicine_id, ingredient_name, ingredient_name_norm, ingredient_strength,
+                ingredient_strength_norm
+            ) VALUES (?, 'Amoxicillin', 'amoxicillin', '500mg', '500mg')""", (medicine_id,))
+            connection.commit()
+        finally:
+            connection.close()
+        return medicine_id
+
+    def test_no_reference_options_without_the_reference_price_table(self):
+        result = get_substitutes(self._add_amoxicillin_target())
+        self.assertEqual(result["reference_price_options"], [])
+        self.assertEqual(result["reference_price_option_count"], 0)
+
+    def test_reference_price_joins_on_form_and_composition_without_a_saving_claim(self):
+        self._add_reference_price("capsule|amoxicillin:500mg", "2025-04-01", price=10.0, price_per_unit=1.0)
+        # A different dosage form must not be joined to a capsule product.
+        self._add_reference_price("tablet|amoxicillin:500mg", "2025-04-01", price=12.0, price_per_unit=1.2, unit="tablet")
+        medicine_id = self._add_amoxicillin_target(price=50, checked=datetime.now(timezone.utc).isoformat())
+
+        result = get_substitutes(medicine_id)
+        self.assertEqual(result["reference_price_option_count"], 1)
+        option = result["reference_price_options"][0]
+        self.assertEqual(option["product_name"], "Amoxicillin Capsules IP 500mg")
+        self.assertEqual(option["pack"], "10's")
+        self.assertEqual(option["price"], 10.0)
+        self.assertEqual(option["price_per_unit"], 1.0)
+        self.assertEqual(option["unit"], "capsule")
+        self.assertEqual(option["reference_price_per_unit"], 5.0)
+        self.assertEqual(option["difference_per_unit"], 4.0)
+        self.assertEqual(option["observed_at"], "2025-04-01")
+        # The edition is over a year old, so no saving is claimed.
+        self.assertFalse(option["price_is_current"])
+        self.assertNotIn("savings_percent", option)
+        self.assertNotIn("savings_amount", option)
+
+    def test_reference_price_saving_requires_a_current_listing_and_a_recent_edition(self):
+        self._add_reference_price(
+            "capsule|amoxicillin:500mg",
+            datetime.now(timezone.utc).isoformat(),
+            price=10.0, price_per_unit=1.0,
+        )
+        now = datetime.now(timezone.utc).isoformat()
+
+        current = get_substitutes(self._add_amoxicillin_target(price=50, checked=now))
+        option = current["reference_price_options"][0]
+        self.assertTrue(option["price_is_current"])
+        self.assertEqual(option["savings_amount"], 4.0)
+        self.assertEqual(option["savings_percent"], 80.0)
+        self.assertEqual(option["savings_basis"], "per unit")
+
+        undated = get_substitutes(self._add_amoxicillin_target(price=50, checked=None))
+        self.assertNotIn("savings_percent", undated["reference_price_options"][0])
+
+    def _add_medicine(self, name, composition, price=50, form="Capsule", release=None,
+                      checked=None, pack="10 capsules"):
+        key = make_product_key(name, name, "500mg", form, composition, release, pack)
+        connection = sqlite3.connect(self.db_path)
+        try:
+            medicine_id = connection.execute("""INSERT INTO medicines(
+                medicine_name, brand_name, strength, dosage_form, composition, price,
+                release_type, pack_size, composition_complete, price_source,
+                price_checked_at, product_key
+            ) VALUES (?, ?, '500mg', ?, ?, ?, ?, ?, 1, ?, ?, ?)""",
+                (name, name, form, composition, price, release, pack,
+                 "fixture" if checked else None, checked, key)).lastrowid
+            for ingredient in parse_composition(composition) or []:
+                connection.execute("""INSERT INTO medicine_ingredients(
+                    medicine_id, ingredient_name, ingredient_name_norm, ingredient_strength,
+                    ingredient_strength_norm
+                ) VALUES (?, ?, ?, ?, ?)""",
+                    (medicine_id, ingredient["ingredient_name"], ingredient["ingredient_name_norm"],
+                     ingredient["ingredient_strength"], ingredient["ingredient_strength_norm"]))
+            connection.commit()
+        finally:
+            connection.close()
+        return medicine_id
+
+    def test_narrow_therapeutic_index_products_are_not_compared(self):
+        now = datetime.now(timezone.utc).isoformat()
+        target = self._add_medicine(
+            "Warfarin 5mg Tablet", "Warfarin (500mg)", price=50, form="Tablet",
+            checked=now, pack="10 tablets",
+        )
+        self._add_medicine(
+            "Cheap Warfarin 5mg Tablet", "Warfarin (500mg)", price=10, form="Tablet",
+            checked=now, pack="10 tablets",
+        )
+
+        result = get_substitutes(target)
+        self.assertEqual(result["comparison_status"], "restricted_class")
+        self.assertIn("narrow therapeutic index", result["restricted_class_reason"])
+        self.assertEqual(result["same_composition_alternatives"], [])
+        self.assertEqual(result["same_composition_options"], [])
+        self.assertEqual(result["substitutes"], [])
+        self.assertEqual(result["unverified_matches"], [])
+        self.assertEqual(result["reference_price_options"], [])
+
+    def test_injectable_reference_is_not_compared(self):
+        target = self._add_medicine(
+            "Amoxicillin 500mg Injection", "Amoxicillin (500mg)", form="Injection", pack="1 vial",
+        )
+        result = get_substitutes(target)
+        self.assertEqual(result["comparison_status"], "restricted_class")
+        self.assertIn("injectable", result["restricted_class_reason"])
+
+    def test_modified_release_candidate_is_excluded_without_a_release_column(self):
+        target = self._add_medicine("Plain Amoxicillin 500mg Capsule", "Amoxicillin (500mg)")
+        # Name-marked modified-release rows with an empty release column must not
+        # pass as plain immediate-release equivalents.
+        self._add_medicine("Sustained Release Amoxicillin 500mg Capsule", "Amoxicillin (500mg)", price=10)
+        self._add_medicine("Amoxicillin 500mg SR Capsule", "Amoxicillin (500mg)", price=5)
+        self._add_medicine("Amoxicillin 500mg Capsule", "Amoxicillin (500mg)", price=30)
+
+        result = get_substitutes(target)
+        names = [item["medicine_name"] for item in result["same_composition_options"]]
+        self.assertEqual(names, ["Amoxicillin 500mg Capsule"])
+        potential = [item["medicine_name"] for item in result["unverified_matches"]]
+        self.assertNotIn("Amoxicillin 500mg SR Capsule", potential)
+        self.assertNotIn("Sustained Release Amoxicillin 500mg Capsule", potential)
+
     def test_catalog_options_exclude_products_without_a_pack_size(self):
         connection = sqlite3.connect(self.db_path)
         try:

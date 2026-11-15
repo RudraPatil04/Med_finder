@@ -372,6 +372,16 @@ def build_database(df):
         ON medicines(composition_complete, strength, dosage_form, release_type, pack_size, price)
     """)
 
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_search_norm
+        ON medicines(search_norm)
+    """)
+
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_group_price
+        ON medicines(strength COLLATE NOCASE, dosage_form COLLATE NOCASE, price, composition_complete)
+    """)
+
     conn.commit()
 
     print("✓ Indexes Created")

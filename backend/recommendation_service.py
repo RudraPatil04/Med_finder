@@ -3,12 +3,20 @@
 import re
 
 from backend.database import execute_query
-from backend.medicine_data import normalize_medication_text
+from backend.medicine_data import (
+    is_modified_release,
+    normalize_dosage_form,
+    normalize_medication_text,
+    restricted_reason,
+)
 from backend.services.drug_catalog_service import enrich_medicine_composition
 from backend.services.price_enrichment_service import enrich_medicine_price
 
 
 PRICE_MAX_AGE_DAYS = 30
+# A published generic price list is an edition, not a live listing, so it stays
+# usable for a year instead of the 30-day window applied to scraped listings.
+REFERENCE_PRICE_MAX_AGE_DAYS = 400
 MARKET_JURISDICTION = "IN"
 PACK_QUANTITY = re.compile(r"(\d+)\s*(tablets?|capsules?|softgels?|ml|sachets?|units?)\b", re.I)
 
@@ -23,9 +31,13 @@ def _ingredient_signature(medicine_id):
 
 
 def _fresh_price(value):
+    return _fresh_within(value, PRICE_MAX_AGE_DAYS)
+
+
+def _fresh_within(value, days):
     return bool(value) and execute_query(
         "SELECT 1 WHERE datetime(?) >= datetime('now', ?) LIMIT 1",
-        (value, f"-{PRICE_MAX_AGE_DAYS} days"),
+        (value, f"-{days} days"),
     ) != []
 
 
@@ -97,8 +109,14 @@ def _candidate_rows(medicine, signature, target_id, require_release_match=False,
         candidate_signature = tuple(sorted(
             tuple(part.split(":", 1)) for part in parts if ":" in part
         ))
-        if candidate_signature == signature:
-            matches.append(item)
+        if candidate_signature != signature:
+            continue
+        # A modified-release product whose release column is empty would otherwise
+        # pass as a plain immediate-release equivalent, so the name is checked too.
+        if is_modified_release(item.get("release_type"), item.get("medicine_name"),
+                               item.get("brand_name")):
+            continue
+        matches.append(item)
     return matches
 
 
@@ -112,6 +130,76 @@ def _equivalence_evidence(reference_key, candidate_key):
            LIMIT 1""",
         (reference_key, candidate_key, MARKET_JURISDICTION),
     )
+
+
+def _reference_table_ready():
+    return bool(execute_query(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'reference_prices' LIMIT 1"
+    ))
+
+
+def _composition_key(medicine, signature):
+    """Same key the Jan Aushadhi importer writes: <form family>|<ingredient:strength>+..."""
+    if not signature:
+        return None
+    parts = sorted("%s:%s" % (name, strength) for name, strength in signature)
+    return "%s|%s" % (normalize_dosage_form(medicine.get("dosage_form")), "+".join(parts))
+
+
+def _reference_price_options(medicine, signature, limit=5):
+    """Published generic list prices for the same recorded composition and form.
+
+    These are reference prices for a generic product, not a listing of the
+    searched brand, so they never establish interchangeability.
+    """
+    key = _composition_key(medicine, signature)
+    if not key or not _reference_table_ready():
+        return [], 0
+
+    rows = [dict(row) for row in execute_query(
+        "SELECT * FROM reference_prices WHERE composition_key = ? "
+        "ORDER BY COALESCE(price_per_unit, price_value) LIMIT 20",
+        (key,),
+    )]
+    if not rows:
+        return [], 0
+
+    reference_unit = _price_per_unit(medicine.get("price"), medicine.get("pack_size"))
+    reference_current = _fresh_price(medicine.get("price_checked_at"))
+
+    options = []
+    for row in rows[:max(0, limit)]:
+        observed = row.get("observed_at")
+        dated = _fresh_within(observed, REFERENCE_PRICE_MAX_AGE_DAYS)
+        unit_price = row.get("price_per_unit")
+        option = {
+            "source": row.get("source"),
+            "edition": row.get("source_edition"),
+            "product_name": row.get("generic_name"),
+            "composition": row.get("composition"),
+            "pack": row.get("pack_text"),
+            "price": row.get("price_value"),
+            "price_per_unit": unit_price,
+            "unit": row.get("pack_unit"),
+            "price_kind": row.get("price_kind"),
+            "observed_at": observed,
+            "price_is_current": dated,
+            "match_classification": (
+                "Same recorded ingredients, strength and form - a published generic "
+                "list price, not a listing of this brand and not verified as interchangeable"
+            ),
+        }
+        option_unit = str(row.get("pack_unit") or "").casefold()
+        if reference_unit and unit_price and reference_unit[1] == option_unit:
+            option["reference_price_per_unit"] = round(reference_unit[0], 4)
+            option["difference_per_unit"] = round(reference_unit[0] - unit_price, 4)
+            if reference_current and dated and 0 < unit_price < reference_unit[0]:
+                difference = reference_unit[0] - unit_price
+                option["savings_amount"] = round(difference, 4)
+                option["savings_percent"] = round(difference / reference_unit[0] * 100, 1)
+                option["savings_basis"] = "per unit"
+        options.append(option)
+    return options, len(rows)
 
 
 def get_substitutes(medicine_id, limit=5):
@@ -145,6 +233,15 @@ def get_substitutes(medicine_id, limit=5):
         and medicine.get("product_key")
     )
     matchable = potential_matchable and bool(medicine.get("release_type"))
+    # Modified-release products, supervised forms and narrow-therapeutic-index
+    # ingredients are not offered as cheaper interchangeable options at all.
+    blocked_reason = restricted_reason(medicine, [name for name, _ in signature])
+    blocked = blocked_reason is not None
+
+    reference_price_options, reference_price_option_count = (
+        ([], 0) if blocked
+        else _reference_price_options(medicine, signature, limit=5)
+    )
 
     confirmed = []
     potential = (
@@ -152,7 +249,7 @@ def get_substitutes(medicine_id, limit=5):
             medicine, signature, medicine_id,
             require_pack_match=bool(medicine.get("pack_size")),
         )
-        if potential_matchable else []
+        if potential_matchable and not blocked else []
     )
     # Keep catalog candidates available for transparent review, separate from
     # the evidence-backed alternatives list and without savings calculations.
@@ -177,7 +274,7 @@ def get_substitutes(medicine_id, limit=5):
 
     cheaper_same_content = []
     catalog_options = []
-    if potential_matchable:
+    if potential_matchable and not blocked:
         reference_release = str(medicine.get("release_type") or "").casefold()
         for item in _candidate_rows(medicine, signature, medicine_id, require_pack_match=False):
             price = float(item.get("price") or 0)
@@ -234,7 +331,7 @@ def get_substitutes(medicine_id, limit=5):
             ),
         )
 
-    if matchable:
+    if matchable and not blocked:
         if _fresh_price(medicine.get("price_checked_at")) and medicine.get("price_source"):
             for item in _candidate_rows(medicine, signature, medicine_id, require_release_match=True):
                 if not item.get("product_key") or not item.get("price_source"):
@@ -284,7 +381,13 @@ def get_substitutes(medicine_id, limit=5):
     confirmed_ids = {str(item.get("id")) for item in confirmed}
     cheaper_same_content = [item for item in cheaper_same_content if str(item.get("id")) not in confirmed_ids]
 
-    if confirmed:
+    if blocked:
+        status = "restricted_class"
+        message = (
+            f"Cheaper options are not shown for this medicine because {blocked_reason}. "
+            "Switching between products of this type needs prescriber or pharmacist review."
+        )
+    elif confirmed:
         status = "verified_alternatives"
         message = "Product-specific equivalence evidence and recent comparable prices are available."
     elif cheaper_same_content:
@@ -334,12 +437,9 @@ def get_substitutes(medicine_id, limit=5):
                 f"{potential_count} same-ingredient products were found, but none had a verifiable lower "
                 "comparable price. Catalog matches are listed below for review; they are not confirmed as interchangeable."
             )
-    elif not matchable:
-        status = "no_verified_alternatives"
-        message = "Release characteristics are not verified, so no therapeutic equivalent can be confirmed."
     else:
         status = "no_verified_alternatives"
-        message = "No product with the same recorded ingredients, strength, form, release and pack was found."
+        message = "No product with the same recorded ingredients, strength, form and pack was found."
 
     return {
         "success": True,
@@ -351,6 +451,8 @@ def get_substitutes(medicine_id, limit=5):
         "same_composition_count": len(cheaper_same_content),
         "same_composition_options": catalog_options[:max(0, min(limit, 20))],
         "same_composition_option_count": len(catalog_options),
+        "reference_price_options": reference_price_options,
+        "reference_price_option_count": reference_price_option_count,
         "reference_price_available": reference_has_price,
         "reference_price_is_current": reference_price_current,
         "max_savings_percent": max(
@@ -361,5 +463,6 @@ def get_substitutes(medicine_id, limit=5):
         "max_savings_amount": best["savings_amount"] if best else 0.0,
         "substitutes": confirmed,
         "comparison_status": status,
+        "restricted_class_reason": blocked_reason,
         "message": message,
     }

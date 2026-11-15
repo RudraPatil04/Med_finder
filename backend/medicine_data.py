@@ -144,3 +144,123 @@ def extract_pack_size(*values):
             unit = (match.group(2) or "units").casefold()
             return f"{int(match.group(1))} {unit}"
     return None
+
+
+_PACK_QUANTITY = re.compile(
+    r"(\d+)\s*(tablets?|capsules?|softgels?|ml|sachets?|units?)\b",
+    re.IGNORECASE,
+)
+
+
+def pack_quantity(pack_size):
+    """Return `(count, unit)` for a pack text such as `10 tablets`, or None."""
+    match = _PACK_QUANTITY.search(_text(pack_size))
+    if not match:
+        return None
+    return int(match.group(1)), match.group(2).casefold().rstrip("s")
+
+
+# Order matters: "oral suspension" must be tested before "suspension".
+_DOSAGE_FORM_KEYWORDS = (
+    ("tablet", "tablet"),
+    ("tab.", "tablet"),
+    ("capsule", "capsule"),
+    ("cap.", "capsule"),
+    ("lozenge", "lozenge"),
+    ("suppositor", "suppository"),
+    ("pessar", "pessary"),
+    ("patch", "patch"),
+    ("sachet", "sachet"),
+    ("syrup", "oral_liquid"),
+    ("oral suspension", "oral_liquid"),
+    ("oral solution", "oral_liquid"),
+    ("oral liquid", "oral_liquid"),
+    ("suspension", "oral_liquid"),
+    ("emulsion", "oral_liquid"),
+    ("solution", "oral_liquid"),
+    ("injection", "injection"),
+    ("infusion", "injection"),
+    ("gel", "gel"),
+    ("cream", "cream"),
+    ("ointment", "ointment"),
+    ("lotion", "lotion"),
+    ("eye drop", "drops"),
+    ("ear drop", "drops"),
+    ("drops", "drops"),
+    ("inhaler", "inhaler"),
+    ("spray", "spray"),
+    ("granule", "granules"),
+    ("powder", "powder"),
+    ("mouthwash", "mouthwash"),
+    ("gargle", "mouthwash"),
+)
+
+COUNTABLE_DOSAGE_FORMS = frozenset({
+    "tablet", "capsule", "lozenge", "suppository", "pessary", "patch", "sachet",
+})
+
+
+def normalize_dosage_form(value):
+    """Collapse a dosage-form string into the family used for composition keys."""
+    text = " ".join(_text(value).casefold().split())
+    for needle, family in _DOSAGE_FORM_KEYWORDS:
+        if needle in text:
+            return family
+    return "unknown"
+
+
+# ------------------------------------------------------------
+# Safety blocklist
+# ------------------------------------------------------------
+
+# Ingredients where a brand or product switch needs monitoring. Matched as
+# substrings of the normalized name, so salts ("Sodium Valproate") and
+# combination products are caught as well.
+NARROW_THERAPEUTIC_INDEX = frozenset({
+    "acenocoumarol", "aminophylline", "carbamazepine", "ciclosporin", "clozapine",
+    "colchicine", "cyclosporine", "digoxin", "ethosuximide", "everolimus",
+    "levothyroxine", "liothyronine", "lithium", "methotrexate", "mycophenolate",
+    "phenobarbital", "phenobarbitone", "phenytoin", "primidone", "sirolimus",
+    "tacrolimus", "theophylline", "valproate", "valproic", "warfarin",
+})
+
+# Forms dispensed or administered under supervision, where a cheaper brand is
+# not a self-service decision even when the composition matches.
+SUPERVISED_DOSAGE_FORMS = frozenset({"injection", "inhaler"})
+
+_MODIFIED_RELEASE_ABBREV = re.compile(r"\b(?:XR|ER|SR|CR|MR|XL|DR|EC|LA|OD|TR)\b", re.I)
+_MODIFIED_RELEASE_WORDS = re.compile(
+    r"\b(?:extended|sustained|controlled|modified|prolonged|slow|delayed|timed)\s+release\b"
+    r"|\bretard\b|\bdepot\b|\bosmotic\b",
+    re.I,
+)
+
+
+def is_modified_release(*values):
+    """True when a recorded release type or a product name marks a modified-release form."""
+    for value in values:
+        text = _text(value)
+        if not text:
+            continue
+        if (extract_release_type(text) or _MODIFIED_RELEASE_ABBREV.search(text)
+                or _MODIFIED_RELEASE_WORDS.search(text)):
+            return True
+    return False
+
+
+def restricted_reason(medicine, ingredient_names=()):
+    """Describe why a product must not be offered as a cheaper interchangeable option.
+
+    Returns a clause that reads after "because", or None when the product is safe
+    to compare, so callers can simply test truthiness.
+    """
+    if is_modified_release(medicine.get("release_type"), medicine.get("medicine_name"),
+                           medicine.get("brand_name")):
+        return "it is a modified-release formulation"
+    if normalize_dosage_form(medicine.get("dosage_form")) in SUPERVISED_DOSAGE_FORMS:
+        return "it is an injectable or inhaled form"
+    for name in ingredient_names:
+        key = normalize_medication_text(name)
+        if any(term in key for term in NARROW_THERAPEUTIC_INDEX):
+            return "it contains a narrow therapeutic index ingredient"
+    return None
