@@ -56,6 +56,8 @@ class PrescriptionOcrTests(unittest.TestCase):
                  "Amoxicillin (500mg) + Clavulanic Acid (125mg)", 120.0),
                 ("Pantoprazole 40 Tablet", "Pantoprazole", "40mg", "Tablet",
                  "Pantoprazole (40mg)", 18.0),
+                ("Paracetamol 500mg Tablet", "Paracetamol", "500mg", "Tablet",
+                 "Paracetamol (500mg)", 12.0),
             ]
             for name, brand, strength, form, composition, price in rows:
                 medicine_id = connection.execute(
@@ -131,6 +133,143 @@ class PrescriptionOcrTests(unittest.TestCase):
         )
 
         self.assertEqual([item["name"] for item in medicines], ["Dolo 650 Tablet"])
+        self.assertTrue(medicines[0]["strength_match"])
+
+    def test_conflicting_printed_strength_downgrades_an_exact_name_match(self):
+        medicines, _ = ocr_service._extract_medicines(
+            "Tab Paracetamol 650 mg 1-0-1 after meals\n"
+        )
+
+        self.assertEqual([item["name"] for item in medicines], ["Paracetamol 500mg Tablet"])
+        self.assertEqual(medicines[0]["match_type"], "possible")
+        self.assertIs(medicines[0]["strength_match"], False)
+
+    def test_letterhead_lines_are_not_candidates(self):
+        self.assertTrue(ocr_service._looks_like_header("Dr. A Sharma Clinic, Delhi"))
+        self.assertTrue(ocr_service._looks_like_header("Patient Name: Ramesh Verma"))
+        self.assertTrue(ocr_service._looks_like_header("Address: 12 MG Road, Sector 4"))
+        self.assertFalse(ocr_service._looks_like_header("Tab Dolo 650 mg 1-0-1"))
+        self.assertFalse(ocr_service._looks_like_header("Vomikind MD Tablet 1-0-1"))
+
+    def test_garbled_brand_is_returned_as_a_possible_match(self):
+        medicines, unmatched = ocr_service._extract_medicines(
+            "Tab Augmentn 625 mg 1-0-1 for 5 days\n"
+        )
+
+        self.assertEqual([item["name"] for item in medicines], ["Augmentin 625 Duo Tablet"])
+        self.assertEqual(medicines[0]["match_type"], "possible")
+        self.assertIsInstance(medicines[0]["match_score"], float)
+        self.assertEqual(unmatched, [])
+
+    def test_fuzzy_lookup_requires_printed_strength_or_form(self):
+        self.assertIsNone(ocr_service._fuzzy_lookup("augmentn", None, None, None))
+        self.assertIsNotNone(ocr_service._fuzzy_lookup("augmentn", None, "625", "tablet"))
+
+    def test_fuzzy_lookup_rejects_a_tie_between_two_brands(self):
+        connection = sqlite3.connect(self.db_path)
+        try:
+            connection.execute(
+                """INSERT INTO medicines(
+                    medicine_name, brand_name, strength, dosage_form, composition,
+                    price, composition_complete, source
+                ) VALUES ('Augmentix 625mg Tablet','Augmentix','625mg','Tablet',
+                          'Amoxicillin (500mg) + Clavulanic Acid (125mg)',110.0,1,'local')"""
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        self.assertIsNone(
+            ocr_service._fuzzy_lookup("augmentim", "625mg", "625", "tablet")
+        )
+
+    def _insert(self, name, brand, strength, form, composition):
+        connection = sqlite3.connect(self.db_path)
+        try:
+            connection.execute(
+                """INSERT INTO medicines(
+                    medicine_name, brand_name, strength, dosage_form, composition,
+                    price, composition_complete, source
+                ) VALUES (?,?,?,?,?,25.0,1,'local')""",
+                (name, brand, strength, form, composition),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+    def test_phone_and_clinic_hours_are_not_matched(self):
+        self._insert("Tel 40mg Tablet", "Tel", "40mg", "Tablet", "Telmisartan (40mg)")
+        self._insert("Mon 10mg Tablet", "Mon", "10mg", "Tablet", "Montelukast (10mg)")
+
+        medicines, unmatched = ocr_service._extract_medicines(
+            "Tel.: 2261594698\n"
+            "Mon to Sat 10-1, 5-8\n"
+            "WT 35.8 KG  HT 145 CM\n"
+        )
+
+        self.assertEqual(medicines, [])
+        self.assertEqual(unmatched, [])
+
+    def test_bare_brand_line_without_strength_or_form_is_matched(self):
+        self._insert("Ibugesic Plus Tablet", "Ibugesic", "400mg", "Tablet",
+                     "Ibuprofen (400mg) + Paracetamol (325mg)")
+
+        medicines, _ = ocr_service._extract_medicines("Ibugesic Plus\n")
+
+        self.assertEqual([item["name"] for item in medicines], ["Ibugesic Plus Tablet"])
+
+    def test_doctor_name_is_not_matched_to_a_medicine_that_contains_it(self):
+        self._insert("Pramodep 50mg Tablet", "Pramodep", "50mg", "Tablet", "Pramipexole (50mg)")
+
+        medicines, _ = ocr_service._extract_medicines(
+            "Dr. Pramod Balakrishnan\n"
+            "Pramod\n"
+        )
+
+        self.assertEqual(medicines, [])
+
+    def test_abbreviation_is_not_matched_inside_a_longer_brand(self):
+        self._insert("Nabiclav Forte Dry Syrup", "Nabiclav", "228.5mg", "Syrup",
+                     "Amoxicillin (200mg) + Clavulanic Acid (28.5mg)")
+
+        medicines, unmatched = ocr_service._extract_medicines(
+            "Cap Biclav DS 1-0-1 x 5 days\n"
+        )
+
+        self.assertEqual(medicines, [])
+        self.assertEqual([line["query"] for line in unmatched], ["Biclav"])
+
+    def test_second_printed_name_word_prefers_the_matching_product(self):
+        self._insert("IBUgesic 200 Tablet", "IBUgesic", "200mg", "Tablet", "Ibuprofen (200mg)")
+        self._insert("Ibugesic Plus Tablet", "Ibugesic", "400mg", "Tablet",
+                     "Ibuprofen (400mg) + Paracetamol (325mg)")
+
+        medicines, _ = ocr_service._extract_medicines(
+            "Tab Ibugesic Plus 1-0-1 x 5 days\n"
+        )
+
+        self.assertEqual([item["name"] for item in medicines], ["Ibugesic Plus Tablet"])
+
+    def test_three_letter_brand_is_read(self):
+        connection = sqlite3.connect(self.db_path)
+        try:
+            connection.execute(
+                """INSERT INTO medicines(
+                    medicine_name, brand_name, strength, dosage_form, composition,
+                    price, composition_complete, source
+                ) VALUES ('PAN 40 Tablet','PAN','40mg','Tablet',
+                          'Pantoprazole (40mg)',18.0,1,'local')"""
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        medicines, _ = ocr_service._extract_medicines(
+            "Tab PAN 40 mg 1-0-0 before breakfast\n"
+        )
+
+        self.assertEqual([item["name"] for item in medicines], ["PAN 40 Tablet"])
+        self.assertEqual(medicines[0]["match_type"], "exact")
         self.assertTrue(medicines[0]["strength_match"])
 
     def test_unknown_medicine_is_listed_unmatched_not_invented(self):

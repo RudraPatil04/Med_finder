@@ -19,7 +19,9 @@ from pathlib import Path
 
 import requests
 from PIL import Image, ImageOps, UnidentifiedImageError
+from rapidfuzz import fuzz, process
 
+from backend.database import execute_query
 from backend.medicine_data import normalize_measure
 from backend.services.medicine_service import search_medicines
 
@@ -38,6 +40,14 @@ GOOGLE_VISION_MAX_SIDE = 2400
 MAX_NAME_TOKENS = 30
 MAX_LINES = 40
 MAX_UNMATCHED = 8
+# Fuzzy fallback: only near-identical readings of a real brand are accepted.
+# 88 scored 43% wrong in calibration, 92 scored 1/17; a candidate also needs a
+# printed strength or dosage form and must beat every rival by FUZZY_MIN_GAP.
+FUZZY_CUTOFF = 92
+FUZZY_CANDIDATES = 400
+FUZZY_MATCHES = 8
+FUZZY_MIN_TOKEN = 4
+FUZZY_MIN_GAP = 3
 
 TESSERACT_CANDIDATES = (
     r"C:\Program Files\Tesseract-OCR\tesseract.exe",
@@ -45,7 +55,7 @@ TESSERACT_CANDIDATES = (
 )
 
 _STRENGTH = re.compile(r"\b\d+(?:\.\d+)?\s*(?:mg|mcg|µg|ug|g|ml|iu|units?|%)(?![a-z])", re.I)
-_NAME_TOKEN = re.compile(r"\b[A-Za-z][A-Za-z0-9-]{3,}\b")
+_NAME_TOKEN = re.compile(r"\b[A-Za-z][A-Za-z0-9-]{2,}\b")
 _FORM_HINTS = (
     (re.compile(r"\b(?:tab|tabs|tablet|tablets)\b", re.I), "tablet"),
     (re.compile(r"\b(?:cap|caps|capsule|capsules)\b", re.I), "capsule"),
@@ -66,9 +76,20 @@ _DOSAGE_PATTERNS = (
     re.compile(r"\b(?:take\s+)?(?:\d{1,2}|half|one|two)\s*(?:tablet|capsule|cap|tab|tsp|ml)s?\b", re.I),
     re.compile(r"\b(?:morning|afternoon|evening|night|bedtime)\b", re.I),
 )
+# "12 MG Road" is an address, not a 12 mg dose; Indian streets make MG ambiguous.
+_ADDRESS_UNIT = re.compile(
+    r"\b\d+\s*(?:mg|mcg|g|ml)\s*(?:road|rd|street|lane|nagar|colony|sector|chowk)\b", re.I
+)
 _HEADER_WORDS = re.compile(
-    r"\b(?:clinic|hospital|medical|doctor|dr\.?|patient|address|phone|mobile|email|"
-    r"registration|regd|signature|diagnosis|advice|follow[\s-]?up|consultation)\b",
+    r"\b(?:clinic|hospital|medical|doctor|dr|patient|address|phone|mobile|email|"
+    r"registration|regn|regd|mci|council|signature|stamp|seal|diagnosis|advice|"
+    r"investigation|investigations|follow[\s-]?up|consultation|date|complaint|vitals|"
+    r"weight|height|pulse|temperature|allergy|allergies|"
+    r"tower|road|street|lane|nagar|colony|sector|village|district|city|pincode|pin|"
+    r"building|complex|plaza|market|chowk|apartment|plot|opposite|opp|near|"
+    r"landline|telephone|fax|website|www|"
+    r"mbbs|bds|mds|mch|dnb|dch|dgo|bams|bhms|rmp|frcs|mrcp|mph|phd|"
+    r"pharmacy|chemist|stores)\b",
     re.I,
 )
 _STOPWORDS = {
@@ -85,6 +106,8 @@ _STOPWORDS = {
     "signature", "address", "phone", "mobile", "email", "registration", "regd",
     "dose", "dosage", "total", "qty", "quantity", "continue", "stop", "start",
     "medicine", "medicines", "drug", "drugs", "rx", "mg", "mcg", "ml", "gm",
+    "od", "bd", "bid", "tds", "tid", "qid", "qds", "hs", "sos", "prn",
+    "syp", "syr", "inj", "susp", "soln", "bp", "hr", "kg", "cm",
 }
 
 
@@ -275,9 +298,80 @@ def _form_hint(line):
     return None
 
 
-def _match_token(token, line_strength, cache, form_hint=None, strength_hint=None):
-    """Return the best local catalog row for a printed token, or None."""
-    key = f"{token.casefold()}|{line_strength or ''}|{strength_hint or ''}|{form_hint or ''}"
+def _fuzzy_lookup(token, target_strength, strength_number, form_hint):
+    """Find one near-identical brand for a garbled reading, or None.
+
+    Only brands sharing the first three letters are considered, the line must
+    carry a strength or dosage form, a candidate must still match both, and the
+    best candidate must beat every other brand by FUZZY_MIN_GAP. A typo therefore
+    cannot turn into an unrelated or ambiguous medicine.
+    """
+    key = token.casefold()
+    if len(key) < FUZZY_MIN_TOKEN:
+        return None
+    # A typo alone is not enough context; the same line must print a strength or
+    # a dosage form, which is what separates a medicine line from letterhead.
+    if not (target_strength or strength_number or form_hint):
+        return None
+    prefix = key[:3] + "%"
+    rows = execute_query(
+        "SELECT id, medicine_name, brand_name, strength, dosage_form, price, prescription_required "
+        "FROM medicines WHERE brand_name LIKE ? OR medicine_name LIKE ? LIMIT ?",
+        (prefix, prefix, FUZZY_CANDIDATES),
+    )
+    if not rows:
+        return None
+
+    labels = []
+    owners = []
+    for row in rows:
+        brand = " ".join(str(row["brand_name"] or "").split())
+        for label in (brand, brand.split(" ")[0] if brand else ""):
+            if label:
+                labels.append(label.casefold())
+                owners.append(row)
+    if not labels:
+        return None
+
+    best = {}
+    for _label, score, index in process.extract(
+        key, labels, scorer=fuzz.WRatio, score_cutoff=FUZZY_CUTOFF, limit=FUZZY_MATCHES
+    ):
+        row = owners[index]
+        if form_hint and form_hint not in str(row["dosage_form"] or "").casefold():
+            continue
+        if (target_strength or strength_number) and _strength_state(
+            row, target_strength, strength_number
+        ) is not True:
+            continue
+        product = (
+            " ".join(str(row["brand_name"] or "").split()).casefold(),
+            str(row["strength"] or "").casefold(),
+            str(row["dosage_form"] or "").casefold(),
+        )
+        if product not in best or score > best[product][1]:
+            best[product] = (row, score)
+
+    ranked = sorted(best.values(), key=lambda item: item[1], reverse=True)
+    if not ranked:
+        return None
+    # Two plausible brands this close means the reading cannot tell them apart.
+    if len(ranked) > 1 and ranked[1][1] >= ranked[0][1] - FUZZY_MIN_GAP:
+        return None
+    return ranked[0]
+
+
+def _match_token(token, line_strength, cache, form_hint=None, strength_hint=None, name_hint=None):
+    """Return (row, match_type, score) for a printed token, or None.
+
+    Literal catalog hits win. When the token matches nothing, a fuzzy pass may
+    return a near-identical brand, labelled "possible" so the UI can ask for
+    confirmation instead of asserting it.
+    """
+    key = (
+        f"{token.casefold()}|{line_strength or ''}|{strength_hint or ''}|"
+        f"{form_hint or ''}|{name_hint or ''}"
+    )
     if key in cache:
         return cache[key]
 
@@ -299,8 +393,21 @@ def _match_token(token, line_strength, cache, form_hint=None, strength_hint=None
                 seen_ids.add(row["id"])
                 rows.append(row)
 
+    # A printed name must appear as a whole word: "Pramod" is not "Pramodep" and
+    # "Biclav" is not "Abiclav". Ingredient-only hits have no word to anchor to,
+    # so those lines are reported as unmatched instead of guessing a brand.
+    boundary = re.compile(rf"\b{re.escape(token)}\b", re.I)
+    rows = [
+        row for row in rows
+        if boundary.search(str(row["medicine_name"] or ""))
+        or boundary.search(str(row["brand_name"] or ""))
+    ]
+
     target_strength = normalize_measure(line_strength) if line_strength else None
     token_key = token.casefold()
+    hint_boundary = None
+    if name_hint and len(name_hint) >= 3:
+        hint_boundary = re.compile(rf"\b{re.escape(name_hint)}\b", re.I)
     best = None
     best_rank = None
     for row in rows:
@@ -313,12 +420,26 @@ def _match_token(token, line_strength, cache, form_hint=None, strength_hint=None
         strength_rank = 0 if strength is True else 1 if strength is None else 2
         form_ok = not form_hint or form_hint in str(row["dosage_form"] or "").casefold()
         hint_rank = 0 if strength_number and strength_number in _name_numbers(row["medicine_name"]) else 1
-        rank = (strength_rank, 0 if exact else 1, 0 if form_ok else 1, hint_rank)
+        # "Ibugesic Plus" must beat the plain "Ibugesic" product, and among Plus
+        # products the one adding the fewest words wins ("Plus" over "Plus NF").
+        name_rank = 0 if hint_boundary and hint_boundary.search(str(row["medicine_name"] or "")) else 1
+        extra_rank = 0
+        if hint_boundary:
+            printed = {token_key, name_hint.casefold()}
+            extra_rank = len([word for word in name_words if word not in printed])
+        rank = (strength_rank, 0 if exact else 1, name_rank, extra_rank, 0 if form_ok else 1, hint_rank)
         if best_rank is None or rank < best_rank:
             best, best_rank = (row, exact), rank
 
-    cache[key] = best
-    return best
+    if best is not None:
+        row, exact = best
+        result = (row, "exact" if exact else "partial", None)
+    else:
+        fuzzy = _fuzzy_lookup(token, target_strength, strength_number, form_hint)
+        result = (fuzzy[0], "possible", round(fuzzy[1], 1)) if fuzzy else None
+
+    cache[key] = result
+    return result
 
 
 def _dosage_text(line):
@@ -335,7 +456,11 @@ def _dosage_text(line):
 
 
 def _looks_like_header(line):
-    return bool(_HEADER_WORDS.search(line)) and not _STRENGTH.search(line)
+    if not _HEADER_WORDS.search(line):
+        return False
+    if _ADDRESS_UNIT.search(line):
+        return True
+    return not _STRENGTH.search(line)
 
 
 def _candidate_lines(text):
@@ -375,20 +500,27 @@ def _extract_medicines(text):
         form_hint = _form_hint(line)
         match = None
         matched_hint = None
-        for token in _name_tokens(line):
+        tokens = _name_tokens(line)
+        # A strength or dosage form is what separates a medicine line from a phone
+        # number or clinic hours ("Tel", "Mon to Sat"). Without one, only a long
+        # whole-word brand name is trusted.
+        has_context = bool(strength or form_hint)
+        for index, token in enumerate(tokens):
             if tokens_checked >= MAX_NAME_TOKENS:
                 break
             tokens_checked += 1
             hint = _adjacent_strength(line, token)
-            candidate = _match_token(token, strength, cache, form_hint, hint)
-            if candidate:
+            name_hint = tokens[index + 1] if index + 1 < len(tokens) else None
+            candidate = _match_token(token, strength, cache, form_hint, hint, name_hint)
+            if candidate and (has_context or (len(token) >= 5 and candidate[1] == "exact")):
                 match = (token, candidate)
                 matched_hint = hint
                 break
 
         if not match:
-            tokens = _name_tokens(line)
-            if len(unmatched) < MAX_UNMATCHED and (strength or 2 <= len(tokens) <= 8):
+            long_token = any(len(token) >= 4 for token in tokens)
+            listable = strength or form_hint or (2 <= len(tokens) <= 8 and long_token)
+            if len(unmatched) < MAX_UNMATCHED and listable:
                 unmatched.append({
                     "text": line[:160],
                     "strength": strength,
@@ -396,7 +528,7 @@ def _extract_medicines(text):
                 })
             continue
 
-        token, (row, exact) = match
+        token, (row, match_type, match_score) = match
         if row["id"] in seen_ids:
             continue
         seen_ids.add(row["id"])
@@ -408,6 +540,12 @@ def _extract_medicines(text):
             _strength_number(strength) or matched_hint,
         )
 
+        # A printed strength that contradicts the row means the name alone is not
+        # enough to confirm the product, even when the name matches exactly.
+        effective_match_type = (
+            "possible" if match_type == "exact" and strength_match is False else match_type
+        )
+
         medicines.append({
             "medicine_id": row["id"],
             "name": row["medicine_name"],
@@ -417,7 +555,8 @@ def _extract_medicines(text):
             "dosage_form": row["dosage_form"],
             "price": row["price"],
             "prescription_required": row["prescription_required"],
-            "match_type": "exact" if exact else "partial",
+            "match_type": effective_match_type,
+            "match_score": match_score,
             "strength_match": strength_match,
             "dosage_text": _dosage_text(line),
             "source_line": line[:160],

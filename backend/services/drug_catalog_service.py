@@ -1,10 +1,14 @@
-"""Live India drug catalog (DrugDB / NRCeS) lookups that persist records locally.
+"""Live India drug catalog (DrugDB by HealthPilot) lookups that persist records locally.
 
 Records added here are catalog facts only: name, brand, structured generic
-composition, strength and dosage form. No price, pack size or equivalence claim
-is invented by this module.
+composition, strength, dosage form and stated packaging. No retail price or
+equivalence claim is invented by this module.
+
+The public endpoint is `GET /v1/search`; an optional key is read from
+`DRUGDB_API_KEY` and sent as `X-Api-Key`.
 """
 
+import os
 import re
 from datetime import datetime, timezone
 
@@ -22,17 +26,11 @@ from backend.services.price_comparison_service import _search_payload
 
 DRUGDB_BASE_URL = "https://drugdb.in"
 DRUGDB_TIMEOUT_SECONDS = 8
-DRUGDB_SOURCE = "DrugDB · NRCeS India drug catalog"
+DRUGDB_SOURCE = "DrugDB · HealthPilot India drug catalog"
+DRUGDB_KEY_ENV = "DRUGDB_API_KEY"
 PHARMEASY_SOURCE = "PharmEasy live catalog"
 ENRICHMENT_ATTEMPT_KEY = "enrich:{medicine_id}"
 
-_UNIT_ALIASES = {
-    "milligram": "mg", "milligrams": "mg", "microgram": "mcg", "micrograms": "mcg",
-    "gram": "g", "grams": "g", "milliliter": "ml", "millilitre": "ml",
-    "milliliters": "ml", "millilitres": "ml", "international unit": "IU",
-    "international units": "IU",
-}
-_SOLID_DENOMINATORS = {"tablet", "each", "capsule", "vial", "piece", "unit", "sachet", "dose", "actuation"}
 # Ordered: the first marker found in the dose-form text wins.
 _FORM_MARKERS = (
     ("eye drop", "Eye Drop"), ("ophthalmic", "Eye Drop"),
@@ -78,6 +76,14 @@ def ensure_catalog_schema():
             execute_non_query(f"ALTER TABLE medicines ADD COLUMN {name} {ddl}")
     if execute_query("SELECT 1 FROM medicines WHERE search_norm IS NULL LIMIT 1"):
         _backfill_search_norm()
+    # Type-ahead suggestions read the normalized name by prefix and check the
+    # same strength/form/price group, so both paths get a covering index.
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_search_norm ON medicines(search_norm)",
+        "CREATE INDEX IF NOT EXISTS idx_group_price ON medicines("
+        "strength COLLATE NOCASE, dosage_form COLLATE NOCASE, price, composition_complete)",
+    ):
+        execute_non_query(statement)
     _SCHEMA_READY_FOR = database_path
 
 
@@ -116,20 +122,6 @@ def _clean(value):
     return " ".join(str(value or "").strip().split())
 
 
-def _component_strength(component):
-    numbers = [part.strip() for part in _clean(component.get("strength")).split("/") if part.strip()]
-    unit_parts = [part.strip() for part in _clean(component.get("unit")).split("/") if part.strip()]
-    if not numbers or not unit_parts:
-        return None
-    unit = _UNIT_ALIASES.get(unit_parts[0].casefold(), unit_parts[0].casefold())
-    denominator_unit = ""
-    if len(unit_parts) > 1 and unit_parts[1].casefold() not in _SOLID_DENOMINATORS:
-        denominator_unit = _UNIT_ALIASES.get(unit_parts[1].casefold(), unit_parts[1].casefold())
-    if len(numbers) > 1 and denominator_unit:
-        return f"{numbers[0]}{unit}/{numbers[1]}{denominator_unit}"
-    return f"{numbers[0]}{unit}"
-
-
 def _dosage_form(text):
     haystack = _clean(text).casefold()
     for marker, form in _FORM_MARKERS:
@@ -138,61 +130,46 @@ def _dosage_form(text):
     return None
 
 
-def _category(detail):
-    for entry in detail.get("drugTypes") or []:
-        name = _clean(entry.get("typeName") if isinstance(entry, dict) else None)
-        if name:
-            return name
-    return "Unclassified"
-
-
 def _map_record(record):
-    detail = record.get("genericDetail") or {}
-    components = detail.get("composition") or []
-    parsed = []
-    for component in components:
-        if not isinstance(component, dict):
-            continue
-        name = _clean(component.get("substanceName"))
-        strength = _component_strength(component)
-        if name and strength:
-            parsed.append((name, strength))
+    """Map a DrugDB /v1/search product to the local medicine schema.
+
+    The catalogue returns a structured composition string (`Paracetamol
+    (650mg) + ...`), a dosage form and a packaging line; nothing is inferred
+    beyond the brand name, which comes from the product title.
+    """
+    composition = canonical_composition(_clean(record.get("composition")))
+    parsed = parse_composition(composition)
     if not parsed:
         return None
 
-    composition = canonical_composition(" + ".join(f"{name} ({strength})" for name, strength in parsed))
-    if not parse_composition(composition):
-        return None
-    form = _dosage_form(detail.get("doseForm") or detail.get("name"))
-    if not form:
+    title = _clean(record.get("name"))
+    form = _dosage_form(record.get("dosage_form") or title)
+    brand = _title_brand_phrase(title, None)
+    if not form or not brand:
         return None
 
-    medicine_name = _clean(record.get("medicineName"))
-    # The product title is more reliable than the brand field: some catalog
-    # records carry another brand's name while the title names the product.
-    title_brand = re.split(r"\s+\(", medicine_name)[0].strip() if "(" in medicine_name else ""
-    brand = title_brand or _clean(record.get("brand.brandName"))
-    strength = "/".join(strength for _, strength in parsed)
+    strength = "/".join(part["ingredient_strength"] for part in parsed)
     display_name = f"{brand} {strength} {form}" if len(parsed) == 1 else f"{brand} {form}"
+    image = record.get("image")
     return {
         "medicine_name": display_name,
-        "brand_name": brand or None,
+        "brand_name": brand,
         "strength": strength,
         "dosage_form": form,
-        "medicine_category": _category(detail),
+        "medicine_category": "Unclassified",
         "composition": composition,
         "price": None,
         "price_source": None,
         "price_checked_at": None,
         "prescription_required": "Unknown",
-        "image_url": None,
-        "release_type": extract_release_type(medicine_name),
-        "pack_size": extract_pack_size(medicine_name),
+        "image_url": image if isinstance(image, str) and image.startswith("http") else None,
+        "release_type": extract_release_type(title),
+        "pack_size": extract_pack_size(record.get("packaging")),
         "composition_complete": 1,
         "rxnorm_rxcui": None,
         "source": "api",
         "api_source": DRUGDB_SOURCE,
-        "api_record_id": _clean(record.get("medicineSctid")) or None,
+        "api_record_id": _clean(record.get("product_id")) or None,
         "api_fetched_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
 
@@ -202,14 +179,21 @@ def _map_record(record):
 # ============================================================
 
 def _fetch_records(query, limit):
+    headers = {"User-Agent": "MED-FINDER/1.0", "Accept": "application/json"}
+    api_key = os.environ.get(DRUGDB_KEY_ENV)
+    if api_key:
+        headers["X-Api-Key"] = api_key
     response = requests.get(
-        f"{DRUGDB_BASE_URL}/search",
-        params={"q": query, "type": "medicine", "detail": "full", "limit": max(1, min(limit, 50))},
-        headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
+        f"{DRUGDB_BASE_URL}/v1/search",
+        params={"q": query, "type": "drug", "limit": max(1, min(limit, 50))},
+        headers=headers,
         timeout=DRUGDB_TIMEOUT_SECONDS,
     )
     response.raise_for_status()
-    payload = response.json()
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise ValueError(f"DrugDB returned non-JSON for {query!r}") from exc
     results = payload.get("results", []) if isinstance(payload, dict) else []
     medicines = []
     for record in results:
@@ -569,8 +553,28 @@ def _pick_record(records, medicine):
     return lenient[0] if len(lenient) == 1 else None
 
 
-def enrich_medicine_composition(medicine):
-    """Fill an incomplete composition from the catalog; never overwrites complete data."""
+def find_composition_record(medicine):
+    """Return the catalog record whose composition fits this medicine, without writing.
+
+    Raises the transport errors from `_fetch_records` so a caller can tell an
+    outage apart from a genuine miss.
+    """
+    brand = _clean(medicine.get("brand_name"))
+    if not brand:
+        return None
+    record = _pick_record(_fetch_records(brand, 20), medicine)
+    if not record or not parse_composition(record.get("composition")):
+        return None
+    return record
+
+
+def enrich_medicine_composition(medicine, use_cache=True, raise_errors=False):
+    """Fill an incomplete composition from the catalog; never overwrites complete data.
+
+    `use_cache=False` ignores the per-medicine attempt cache (used by backfills,
+    which track their own progress). `raise_errors=True` re-raises transport and
+    write failures instead of reporting them as a miss.
+    """
     ensure_catalog_schema()
     medicine_id = medicine.get("id")
     brand = _clean(medicine.get("brand_name"))
@@ -578,20 +582,22 @@ def enrich_medicine_composition(medicine):
         return False
 
     attempt_key = ENRICHMENT_ATTEMPT_KEY.format(medicine_id=medicine_id)
-    try:
-        if has_recent_api_search(attempt_key):
-            return False
-    except Exception:
-        pass
+    if use_cache:
+        try:
+            if has_recent_api_search(attempt_key):
+                return False
+        except Exception:
+            pass
 
     try:
-        records = _fetch_records(brand, 20)
+        record = find_composition_record(medicine)
     except (requests.RequestException, ValueError) as exc:
+        if raise_errors:
+            raise
         print(f"Composition lookup failed for {brand} ({type(exc).__name__})")
         return False
 
-    record = _pick_record(records, medicine)
-    if not record or not parse_composition(record.get("composition")):
+    if not record:
         try:
             record_api_search(attempt_key, 0)
         except Exception:
@@ -630,6 +636,8 @@ def enrich_medicine_composition(medicine):
         conn.commit()
     except Exception as exc:
         conn.rollback()
+        if raise_errors:
+            raise
         print(f"Could not enrich composition for medicine {medicine_id}: {exc}")
         return False
     finally:
