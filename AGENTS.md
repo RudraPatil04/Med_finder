@@ -1,5 +1,9 @@
 # MED FINDER — Agent Notes
 
+> Start with `CLAUDE.md`: it holds the current state, the non-negotiable rules, the open
+> problems and how to run the project. This file is the dated changelog of every change and
+> its measured caveats — read the relevant section when you need the reasoning behind a rule.
+
 ## Current working state (2026-10-31)
 
 The changes below are **uncommitted** and were made in a Qoder session. They are present in the
