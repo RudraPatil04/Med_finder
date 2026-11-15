@@ -203,6 +203,11 @@ def _reference_price_options(medicine, signature, limit=5):
                 option["savings_amount"] = round(difference, 4)
                 option["savings_percent"] = round(difference / reference_unit[0] * 100, 1)
                 option["savings_basis"] = "per unit"
+            elif 0 < unit_price < reference_unit[0]:
+                difference = reference_unit[0] - unit_price
+                option["estimated_savings_amount"] = round(difference, 4)
+                option["estimated_savings_percent"] = round(difference / reference_unit[0] * 100, 1)
+                option["estimated_savings_basis"] = "per unit, prices not both confirmed as current"
         options.append(option)
     return options, len(rows)
 
@@ -313,6 +318,18 @@ def get_substitutes(medicine_id, limit=5):
                     basis = "per pack"
 
             if savings is None:
+                # Old or undated prices cannot support a saving claim, but a per-unit
+                # difference between recorded catalog prices is shown as an estimate,
+                # under separate keys so it is never mistaken for a verified saving.
+                if (
+                    reference_has_price and reference_unit
+                    and candidate_unit[1] == reference_unit[1]
+                    and candidate_unit[0] < reference_unit[0]
+                ):
+                    estimate = reference_unit[0] - candidate_unit[0]
+                    item["estimated_savings_amount"] = round(estimate, 4)
+                    item["estimated_savings_percent"] = round(estimate / reference_unit[0] * 100, 1)
+                    item["estimated_savings_basis"] = "per unit, catalog prices not confirmed as current"
                 catalog_options.append(item)
                 continue
             item["savings_amount"] = amount
@@ -466,6 +483,10 @@ def get_substitutes(medicine_id, limit=5):
             or [0]
         ),
         "max_savings_amount": best["savings_amount"] if best else 0.0,
+        "max_estimated_savings_percent": max(
+            [item.get("estimated_savings_percent") or 0
+             for item in catalog_options[:max(0, min(limit, 20))]] or [0]
+        ),
         "substitutes": confirmed,
         "comparison_status": status,
         "restricted_class_reason": blocked_reason,

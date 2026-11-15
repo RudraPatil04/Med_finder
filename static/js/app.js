@@ -404,15 +404,22 @@
         if (!cheaper.length && !options.length && !referenceOptions.length) return;
 
         const priceKnown = cheaper.length > 0;
+        const estimated = !priceKnown && options.some(function (item) {
+            return Number(item.estimated_savings_percent || 0) > 0;
+        });
         const referencePriceMissing = !data.reference_price_available;
         const referencePriceCurrent = Boolean(data.reference_price_is_current);
         const eyebrow = priceKnown
             ? 'Save on the same content'
-            : referencePriceMissing
-                ? 'No recorded price for this medicine'
-                : referencePriceCurrent ? 'No cheaper current listing found' : 'Current price not confirmed';
+            : estimated
+                ? 'Estimated saving (catalog prices)'
+                : referencePriceMissing
+                    ? 'No recorded price for this medicine'
+                    : referencePriceCurrent ? 'No cheaper current listing found' : 'Current price not confirmed';
         const blurb = priceKnown
             ? 'Same recorded ingredients and strength, with current listing prices on both sides. These are catalog matches, not verified as therapeutically interchangeable.'
+            : estimated
+                ? 'These products have the same recorded ingredients, strength and form. Estimated savings compare recorded catalog prices per unit; those prices are not confirmed as current, so check the price at your pharmacy. Not verified as interchangeable - confirm with a doctor or pharmacist.'
             : referencePriceMissing
                 ? 'This medicine has no recorded price, so these are the cheapest catalog products with the same recorded ingredients, strength and form. Their prices are unverified; confirm with a pharmacist.'
                 : referencePriceCurrent
@@ -437,7 +444,9 @@
                     '<div class="cheaper-price"><span>Rs. ' + formatPrice(item.price) + '</span>' +
                     (priceKnown && item.savings_reliable
                         ? '<small class="savings-badge ' + savingsClass(item.savings_percent) + '">Save ' + Number(item.savings_percent).toFixed(0) + '%</small>'
-                        : '<small>Catalog price (unverified)</small>') +
+                        : (Number(item.estimated_savings_percent || 0) > 0
+                            ? '<small class="savings-badge estimated">Est. save ' + Number(item.estimated_savings_percent).toFixed(0) + '%</small>'
+                            : '') + '<small>Catalog price (unverified)</small>') +
                     (unitLabel ? '<small>' + escapeHtml(unitLabel) + '</small>' : '') +
                     '</div></a>';
             }).join('') + '</div>';
@@ -464,7 +473,9 @@
                     (unitLabel ? '<small>' + escapeHtml(unitLabel) + '</small>' : '') +
                     (item.price_is_current && Number(item.savings_percent || 0) > 0
                         ? '<small class="savings-badge ' + savingsClass(item.savings_percent) + '">' + Number(item.savings_percent).toFixed(0) + '% lower per unit</small>'
-                        : '') +
+                        : Number(item.estimated_savings_percent || 0) > 0
+                            ? '<small class="savings-badge estimated">Est. ' + Number(item.estimated_savings_percent).toFixed(0) + '% lower per unit</small>'
+                            : '') +
                     '<small>Jan Aushadhi list price</small>' +
                     '</div></div>';
             }).join('') + '</div></div>';

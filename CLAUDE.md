@@ -16,7 +16,12 @@ caveats. This file is the current state; read AGENTS.md when you need the *why* 
 2. **No savings claim without two current prices.** `PRICE_MAX_AGE_DAYS = 30` in
    `backend/services/medicine_service.py`. If either side's `price_checked_at` is older (or
    missing), the UI says "Catalog price (unverified)" and the response carries no
-   `savings_amount` / `savings_percent` / `savings_basis`.
+   `savings_amount` / `savings_percent` / `savings_basis`. Since 2026-11-16 (owner's decision)
+   such options may carry `estimated_savings_percent` / `estimated_savings_amount` /
+   `estimated_savings_basis` (per-unit difference of recorded catalog prices); the UI labels
+   them "Est. save X%" with a dashed badge and never merges them with verified savings.
+   `/api/substitutes` also fetches live PharmEasy prices first (`live_price_refresh.py`;
+   `?live=0` or `MEDFINDER_LIVE_PRICES=0` turns that off).
 3. **Never call products interchangeable.** Same composition is not substitution. UI copy and
    API text must keep saying the user should confirm with a doctor or pharmacist.
 4. **Restricted classes get nothing.** `restricted_reason()` in `backend/medicine_data.py`

@@ -30,7 +30,7 @@ ATTEMPT_KEY = "live-price:{medicine_id}"
 HIT_TTL_DAYS = 7
 MISS_TTL_DAYS = 1
 DEFAULT_ALTERNATIVES = 8
-DEFAULT_BUDGET_SECONDS = 12.0
+DEFAULT_BUDGET_SECONDS = 6.0
 SKIP_STATUSES = {"restricted_class", "insufficient_product_data"}
 
 
@@ -125,7 +125,7 @@ def refresh_prices(medicines, budget_seconds=DEFAULT_BUDGET_SECONDS):
     executor = ThreadPoolExecutor(max_workers=min(4, len(targets)))
     try:
         futures = {executor.submit(_lookup, item): item for item in targets}
-        done, _ = wait(futures, timeout=budget_seconds)
+        done, not_done = wait(futures, timeout=budget_seconds)
     finally:
         # Lookups still running after the budget are abandoned, not awaited.
         executor.shutdown(wait=False, cancel_futures=True)
@@ -135,7 +135,9 @@ def refresh_prices(medicines, budget_seconds=DEFAULT_BUDGET_SECONDS):
     except Exception:
         pass
     stored = 0
-    errors = 0
+    # A lookup still running when the budget ends counts as a failure: a site that
+    # is slow or silently dropping requests must not make every search wait.
+    errors = len(not_done)
     for future in done:
         item = futures[future]
         reference = future.result()
@@ -148,7 +150,7 @@ def refresh_prices(medicines, budget_seconds=DEFAULT_BUDGET_SECONDS):
             _store(item["id"], listing)
             stored += 1
         _record_attempt(item["id"], found)
-    if errors and errors * 2 >= len(done):
+    if errors and errors * 2 >= len(targets):
         _start_cooldown()
     return stored
 

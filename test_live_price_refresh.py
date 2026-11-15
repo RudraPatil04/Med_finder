@@ -111,6 +111,21 @@ class LivePriceRefreshTests(unittest.TestCase):
         self.assertEqual(result["comparison_status"], "catalog_price_unverified")
         self.assertEqual(result["same_composition_alternatives"], [])
         self.assertEqual(self._row(self.brand), (100.0, None))
+        # Old catalog prices give only an estimate, under keys of its own.
+        option = result["same_composition_options"][0]
+        self.assertEqual(option["estimated_savings_percent"], 60.0)
+        self.assertNotIn("savings_percent", option)
+        self.assertNotIn("savings_amount", option)
+        self.assertEqual(result["max_savings_percent"], 0)
+        self.assertEqual(result["max_estimated_savings_percent"], 60.0)
+
+    def test_no_estimate_when_the_option_is_not_cheaper(self):
+        pricey = self._add("Pricol", 150.0)
+        with patch.dict("os.environ", {"MEDFINDER_LIVE_PRICES": "0"}):
+            result = live_price_refresh.substitutes_with_live_prices(self.generic)
+        by_id = {item["id"]: item for item in result["same_composition_options"]}
+        self.assertNotIn("estimated_savings_percent", by_id[pricey])
+        self.assertNotIn("estimated_savings_percent", by_id[self.brand])
 
     def test_blocked_site_starts_a_cooldown_and_is_not_cached_as_a_miss(self):
         with patch.object(live_price_refresh, "find_reference_listing",
@@ -125,6 +140,19 @@ class LivePriceRefreshTests(unittest.TestCase):
                           return_value=None) as lookup:
             live_price_refresh.substitutes_with_live_prices(self.brand)
         self.assertEqual(lookup.call_count, 2)
+
+    def test_lookups_over_budget_start_a_cooldown(self):
+        import time as real_time
+
+        def slow(medicine):
+            real_time.sleep(0.5)
+            return None
+        with patch.object(live_price_refresh, "find_reference_listing", side_effect=slow):
+            live_price_refresh.refresh_prices(
+                [{"id": self.brand, "composition": "x", "dosage_form": "Tablet"}],
+                budget_seconds=0.05,
+            )
+        self.assertTrue(live_price_refresh._in_cooldown())
 
     def test_only_one_side_found_claims_nothing(self):
         prices = {"Brandol": listing(30.0)}
