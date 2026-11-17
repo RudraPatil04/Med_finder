@@ -19,7 +19,7 @@ from backend.services.drug_catalog_service import (
     ensure_catalog_schema, fetch_medicines, save_catalog_medicine,
     search_catalog, search_pharmeasy_catalog,
 )
-from backend.services.external_api_service import search_rxnorm, save_api_medicine
+from backend.services.external_api_service import search_rxnorm, save_api_medicine, note_issue
 from backend.medicine_data import (
     normalize_medication_text, pack_quantity, parse_composition, restricted_reason,
 )
@@ -481,6 +481,7 @@ def search_medicines(keyword, limit=20, enable_api_fallback=True):
     try:
         ensure_api_search_cache()
         if has_recent_api_search(cache_key):
+            note_issue("cached_miss")
             return local_results
     except Exception as e:
         # The search still works if cache setup fails; it just won't suppress retries.
@@ -512,6 +513,7 @@ def search_medicines(keyword, limit=20, enable_api_fallback=True):
             return results
     except Exception as e:
         print(f"Catalog fallback failed: {e}")
+        note_issue("India drug catalog / PharmEasy")
 
     # RxNorm covers medicines the Indian catalog does not list; these records
     # carry no composition or price, so they cannot be matched for alternatives.

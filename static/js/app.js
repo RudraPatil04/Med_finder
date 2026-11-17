@@ -367,8 +367,31 @@
         }
         state.medicines = data.data;
         state.page = 1;
+        renderSearchNotice(data.notice, data.related);
         filterResults();
         loadCheaperAlternatives(data.data[0], requestId);
+    }
+
+    // Explains why a search has no price / no match, and lists same-ingredient
+    // Indian products when one could be found. Never claims they are substitutes.
+    function renderSearchNotice(notice, related) {
+        const box = document.getElementById("searchNotice");
+        if (!box) return;
+        if (!notice) {
+            box.hidden = true;
+            box.innerHTML = "";
+            return;
+        }
+        let html = '<strong>Please note</strong><p>' + escapeHtml(notice.message) + '</p>';
+        if (related && related.length) {
+            html += '<ul class="notice-related">' + related.map(function (r) {
+                return '<li><a href="/medicine/' + encodeURIComponent(r.id) + '">' + escapeHtml(r.medicine_name) + '</a> · ' +
+                    escapeHtml([r.strength, r.dosage_form].filter(Boolean).join(" · ")) +
+                    ' · Rs. ' + escapeHtml(formatPrice(r.price)) + ' (catalog price, unverified)</li>';
+            }).join("") + '</ul>';
+        }
+        box.innerHTML = html;
+        box.hidden = false;
     }
 
     function clearCheaperAlternatives() {
@@ -966,9 +989,9 @@
             '<div class="medicine-body">' +
             '<small>' + escapeHtml(m.brand) + '</small>' +
             '<h3>' + escapeHtml(m.name) + '</h3>' +
-            '<small>' + escapeHtml(m.manufacturer || m.category || "MED FINDER") + '</small>' +
-            '<div class="medicine-meta"><span>' + escapeHtml(m.category || "Medicine") + '</span></div>' +
-            '<div class="price-row"><div><div class="price">Rs. ' + escapeHtml(formatPrice(m.price)) + '</div><div class="mrp">' + priceProvenance(m) + '</div></div><span class="view-pill">View</span></div>' +
+            '<small>' + escapeHtml(m.manufacturer || "Manufacturer not listed") + '</small>' +
+            '<div class="medicine-meta"><span>' + escapeHtml(categoryLabel(m)) + '</span></div>' +
+            '<div class="price-row"><div><div class="price' + (m.price ? '' : ' price-missing') + '">' + priceLabel(m) + '</div><div class="mrp">' + priceProvenance(m) + '</div></div><span class="view-pill">View</span></div>' +
             '</div></a>' +
             '<button class="btn btn-outline btn-compare" type="button" data-compare-id="' + m.id + '" onclick="event.preventDefault(); showComparison(' + m.id + ', \'' + escapeHtml(m.name).replace(/'/g, "\\'") + '\')"><span class="icon icon-shuffle"></span> Compare Prices</button>' +
             '</div>';
@@ -1123,8 +1146,20 @@
         };
     }
 
+    function categoryLabel(medicine) {
+        return medicine.category === "External" ? "US catalog only" : (medicine.category || "Medicine");
+    }
+
+    function priceLabel(medicine) {
+        return medicine.price ? "Rs. " + escapeHtml(formatPrice(medicine.price)) : "Price not available";
+    }
+
     function priceProvenance(medicine) {
-        if (!medicine.price) return "Price unavailable";
+        if (!medicine.price) {
+            return medicine.category === "External"
+                ? "Not listed in the Indian catalog"
+                : "No price recorded";
+        }
         const date = medicine.priceCheckedAt ? new Date(medicine.priceCheckedAt) : null;
         const dateLabel = date && !Number.isNaN(date.getTime())
             ? "Checked " + dateFormatter.format(date)

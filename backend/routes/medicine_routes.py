@@ -27,6 +27,9 @@ from backend.services.price_enrichment_service import persist_reference_price
 from backend.services.enrichment_worker import request_enrichment
 from backend.services.live_price_refresh import substitutes_with_live_prices
 
+from backend.services.external_api_service import pop_issues
+from backend.services.search_notice_service import related_by_ingredient, build_notice
+
 medicine_bp = Blueprint("medicine", __name__)
 
 
@@ -53,12 +56,18 @@ def search():
             "message": "Search keyword is required."
         }), 400
 
+    pop_issues()
     medicines = search_medicines(keyword)
+    rows = [dict(row) for row in medicines]
+    ingredient, related = related_by_ingredient(rows)
+    notice = build_notice(keyword, rows, pop_issues(), ingredient, related)
 
     return jsonify({
         "success": True,
-        "count": len(medicines),
-        "data": [dict(row) for row in medicines]
+        "count": len(rows),
+        "data": rows,
+        "notice": notice,
+        "related": related,
     })
 
 

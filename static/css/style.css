@@ -2462,6 +2462,21 @@ input[type="range"] {
     font-size: 13px;
 }
 
+.search-notice {
+    margin-bottom: 22px;
+    padding: 16px 20px;
+    border-radius: 16px;
+    border: 1px solid #fcd34d;
+    background: #fffbeb;
+    color: #78350f;
+}
+
+.search-notice p { margin: 6px 0 0; }
+
+.notice-related { margin: 10px 0 0; padding-left: 18px; }
+
+.price-missing { font-size: 1.05rem; color: #64748b; }
+
 .cheaper-panel {
     margin-bottom: 22px;
     padding: 20px 22px;
