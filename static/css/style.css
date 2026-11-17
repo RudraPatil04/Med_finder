@@ -1364,6 +1364,63 @@ input[type="range"] {
     font-style: italic;
 }
 
+.scan-scores {
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+}
+
+.detected-item.confirmed {
+    box-shadow: inset 4px 0 0 #10b981;
+    padding-left: 12px;
+}
+
+.scan-chips {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin-top: 6px;
+}
+
+.scan-chips > small {
+    width: 100%;
+}
+
+.scan-chip .chip-score {
+    margin-left: 4px;
+    color: var(--muted);
+    font-weight: 600;
+}
+
+.correct-panel {
+    margin-top: 8px;
+}
+
+.correct-form {
+    display: flex;
+    gap: 6px;
+    max-width: 420px;
+}
+
+.correct-form input {
+    flex: 1;
+    min-width: 0;
+    min-height: 34px;
+    padding: 0 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font: inherit;
+    font-size: 13px;
+    color: inherit;
+    background: transparent;
+}
+
+.confirm-summary {
+    margin: 0 0 4px;
+    color: var(--muted);
+    font-size: 13px;
+}
+
 .btn-sm {
     min-height: 34px;
     padding: 0 12px;

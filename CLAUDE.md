@@ -110,7 +110,7 @@ Optional tools (all safe to skip): `etl/backfill_compositions.py` (resumable, ne
 source CSV), `etl/import_jan_aushadhi.py --pdf … --edition 2025 --edition-date …`,
 `etl/repair_ingredient_prefixes.py [--apply]` (dry run by default).
 
-Tests (unittest, offline, 71 focused tests):
+Tests (unittest, offline, 80 focused tests):
 `test_search_suggestions`, `test_api_fallback_cache`, `test_prescription_ocr`,
 `test_drug_catalog_client`, `test_backfill_compositions`, `test_repair_ingredient_prefixes`,
 `test_drugsetu_enrichment`. `test_api_fallback.py` and `test_clean.py` contain 0 test cases.

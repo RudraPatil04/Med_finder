@@ -1105,3 +1105,29 @@ Files: `backend/ocr_service.py`, `static/js/app.js`, `static/css/style.css`,
   and `test_backfill_compositions` pass.
 - Verified with a rendered image through `/api/ocr` and in the browser on `/scanner`: the
   detected row shows the warning badge and "1 medicine matched."; asset version `20261111-3`.
+
+## Update — handwritten prescription accuracy (2026-11-17)
+
+Google Vision already used `DOCUMENT_TEXT_DETECTION` with `languageHints: ["en"]`; the losses
+were in the image sent and in matching garbled words. Changes in `backend/ocr_service.py`:
+
+- `preprocess_prescription_image()` runs before Vision and Tesseract: EXIF rotation, crop to the
+  bright sheet (Otsu threshold on a 400px copy; only when the sheet is 30–95% of the photo),
+  grayscale, autocontrast (1% cutoff), resize to ~1600–2400px (≤3× upscale), unsharp mask.
+- `normalize_ocr_line()` fixes look-alikes only next to digits (`65O`→650, `l0`→10, `rng`/`mq`→mg)
+  and a single trailing 0/1 after a word (`Dol0`→Dolo). `B12`, `D3`, `Telma40` are left alone.
+  Leading `Rx`, `℞`, `1)` markers are stripped; `T.`/`C.` read as tablet/capsule.
+- Vision per-word confidence is collected and returned per line as `ocr_confidence` (0–100).
+- Lines with no literal match are compared (Levenshtein `fuzz.ratio`, cutoff 72) with every
+  catalog brand first word and ingredient name (`_catalog_vocabulary()`, cached 1h per DB path,
+  empty when tables are missing). Up to 3 `suggestions` are returned per unmatched line. A misspelt
+  ingredient with a printed strength resolves to a single-ingredient product of that strength.
+- Auto-accept only when the top suggestion scores ≥90, is a catalog product, agrees with the printed
+  strength/form and leads rivals by ≥5; it is still `match_type = "possible"`.
+- UI (`static/js/app.js`, `scan_medicine.html`): every detected medicine has Confirm / Change /
+  View / Remove, a "N of M confirmed" live summary, read-confidence and name-similarity text
+  (both computed, never invented), suggestion chips on unmatched lines and a type-to-correct search.
+- `rapidfuzz` added to `requirements.txt`. 30 OCR tests (9 new), all offline.
+
+Not done: a vision-LLM reader (Claude/Gemini returning JSON of medicine/strength/dose) would read
+messy handwriting better than OCR; it needs a new API key, so it is left as an option.

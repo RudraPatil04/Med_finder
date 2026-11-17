@@ -9,3 +9,4 @@ Pillow==10.0.0
 pytesseract==0.3.13
 PyMuPDF==1.24.10
 python-pptx==0.6.21
+rapidfuzz>=3.6

@@ -14,13 +14,15 @@ import io
 import os
 import re
 import shutil
+import time
 import uuid
 from pathlib import Path
 
 import requests
-from PIL import Image, ImageOps, UnidentifiedImageError
+from PIL import Image, ImageFilter, ImageOps, UnidentifiedImageError
 from rapidfuzz import fuzz, process
 
+from backend import database
 from backend.database import execute_query
 from backend.medicine_data import normalize_measure
 from backend.services.medicine_service import search_medicines
@@ -37,6 +39,20 @@ OCR_TIMEOUT_SECONDS = 40
 GOOGLE_VISION_URL = "https://vision.googleapis.com/v1/images:annotate"
 GOOGLE_VISION_TIMEOUT_SECONDS = 20
 GOOGLE_VISION_MAX_SIDE = 2400
+# Phone photos are usually larger than this; small scans are upscaled so thin
+# handwriting strokes stay several pixels wide.
+PREPROCESS_TARGET_SIDE = 2000
+PREPROCESS_MIN_SIDE = 1600
+# Paper crop: only applied when the bright sheet is clearly smaller than the
+# photo but still most of it, so a plain white scan is never cut.
+PAPER_CROP_MIN_KEEP = 0.30
+PAPER_CROP_MAX_KEEP = 0.95
+# Suggestions for lines that matched nothing literally (handwriting fallback).
+SUGGEST_CUTOFF = 72
+SUGGEST_LIMIT = 3
+AUTO_ACCEPT_SCORE = 90
+AUTO_ACCEPT_GAP = 5
+VOCAB_TTL_SECONDS = 3600
 MAX_NAME_TOKENS = 30
 MAX_LINES = 40
 MAX_UNMATCHED = 8
@@ -57,8 +73,8 @@ TESSERACT_CANDIDATES = (
 _STRENGTH = re.compile(r"\b\d+(?:\.\d+)?\s*(?:mg|mcg|µg|ug|g|ml|iu|units?|%)(?![a-z])", re.I)
 _NAME_TOKEN = re.compile(r"\b[A-Za-z][A-Za-z0-9-]{2,}\b")
 _FORM_HINTS = (
-    (re.compile(r"\b(?:tab|tabs|tablet|tablets)\b", re.I), "tablet"),
-    (re.compile(r"\b(?:cap|caps|capsule|capsules)\b", re.I), "capsule"),
+    (re.compile(r"\b(?:tab|tabs|tablet|tablets)\b|(?:^|\s)T\.\s", re.I), "tablet"),
+    (re.compile(r"\b(?:cap|caps|capsule|capsules)\b|(?:^|\s)C\.\s", re.I), "capsule"),
     (re.compile(r"\b(?:syr|syrup|susp|suspension)\b", re.I), "syrup"),
     (re.compile(r"\b(?:inj|injection|infusion)\b", re.I), "injection"),
     (re.compile(r"\b(?:drop|drops)\b", re.I), "drops"),
@@ -145,14 +161,7 @@ def _ocr_image(image):
         raise RuntimeError("Tesseract OCR is not installed on the server.")
     pytesseract.pytesseract.tesseract_cmd = command
 
-    prepared = ImageOps.exif_transpose(image).convert("L")
-    if prepared.width < 1200:
-        scale = min(3.0, 1600 / max(prepared.width, 1))
-        prepared = prepared.resize(
-            (round(prepared.width * scale), round(prepared.height * scale)),
-            Image.LANCZOS,
-        )
-    prepared = ImageOps.autocontrast(prepared)
+    prepared = preprocess_prescription_image(image)
     return pytesseract.image_to_string(
         prepared, lang="eng", config="--oem 3 --psm 6", timeout=OCR_TIMEOUT_SECONDS,
     )
@@ -162,24 +171,121 @@ def _google_vision_key():
     return os.environ.get("GOOGLE_VISION_API_KEY", "").strip()
 
 
-def _google_vision_text(image):
-    """Read one page with Google Cloud Vision (DOCUMENT_TEXT_DETECTION)."""
+def _crop_to_paper(gray):
+    """Crop a phone photo to the bright sheet of paper, or return it unchanged.
+
+    Rows and columns where most pixels are bright belong to the paper; the
+    dark table or hand around it is dropped. Uses a small copy so it is fast.
+    """
+    small = gray.copy()
+    small.thumbnail((400, 400))
+    small = small.filter(ImageFilter.MedianFilter(5))
+    histogram = small.histogram()
+    total = sum(histogram) or 1
+    # Otsu threshold between "paper" and "background".
+    weighted_total = sum(index * count for index, count in enumerate(histogram))
+    weight_back = 0
+    sum_back = 0
+    best_threshold, best_variance = 128, -1.0
+    for index, count in enumerate(histogram):
+        weight_back += count
+        if weight_back == 0 or weight_back == total:
+            continue
+        sum_back += index * count
+        mean_back = sum_back / weight_back
+        mean_fore = (weighted_total - sum_back) / (total - weight_back)
+        variance = weight_back * (total - weight_back) * (mean_back - mean_fore) ** 2
+        if variance > best_variance:
+            best_threshold, best_variance = index, variance
+
+    width, height = small.size
+    pixels = small.load()
+
+    def bright_share_row(y):
+        return sum(1 for x in range(width) if pixels[x, y] > best_threshold) / width
+
+    def bright_share_col(x):
+        return sum(1 for y in range(height) if pixels[x, y] > best_threshold) / height
+
+    rows = [y for y in range(height) if bright_share_row(y) > 0.5]
+    cols = [x for x in range(width) if bright_share_col(x) > 0.5]
+    if not rows or not cols:
+        return gray
+    top, bottom, left, right = rows[0], rows[-1] + 1, cols[0], cols[-1] + 1
+    keep = ((bottom - top) * (right - left)) / float(width * height)
+    if not (PAPER_CROP_MIN_KEEP <= keep <= PAPER_CROP_MAX_KEEP):
+        return gray
+    scale_x = gray.width / width
+    scale_y = gray.height / height
+    pad = 4
+    box = (
+        max(0, round((left - pad) * scale_x)),
+        max(0, round((top - pad) * scale_y)),
+        min(gray.width, round((right + pad) * scale_x)),
+        min(gray.height, round((bottom + pad) * scale_y)),
+    )
+    return gray.crop(box)
+
+
+def preprocess_prescription_image(image):
+    """Prepare a prescription photo for OCR.
+
+    Straightens by EXIF, crops to the paper, converts to grayscale, stretches
+    contrast, resizes so the longest side is about 1600-2400 px and sharpens
+    pen strokes. Every step is conservative so a clean scan is not harmed.
+    """
+    prepared = ImageOps.exif_transpose(image)
+    if prepared.mode not in ("RGB", "L"):
+        prepared = prepared.convert("RGB")
+    gray = prepared.convert("L")
+    gray = _crop_to_paper(gray)
+    gray = ImageOps.autocontrast(gray, cutoff=1)
+
+    longest = max(gray.size) or 1
+    if longest < PREPROCESS_MIN_SIDE:
+        scale = min(3.0, PREPROCESS_TARGET_SIDE / longest)
+    elif longest > GOOGLE_VISION_MAX_SIDE:
+        scale = GOOGLE_VISION_MAX_SIDE / longest
+    else:
+        scale = 1.0
+    if scale != 1.0:
+        gray = gray.resize(
+            (max(1, round(gray.width * scale)), max(1, round(gray.height * scale))),
+            Image.LANCZOS,
+        )
+    return gray.filter(ImageFilter.UnsharpMask(radius=2, percent=80, threshold=3))
+
+
+def _vision_word_confidences(result, confidences):
+    """Collect Vision's per-word confidence (0-1) keyed by lower-cased word."""
+    for page in (result.get("fullTextAnnotation") or {}).get("pages", []):
+        for block in page.get("blocks", []):
+            for paragraph in block.get("paragraphs", []):
+                for word in paragraph.get("words", []):
+                    text = "".join(symbol.get("text", "") for symbol in word.get("symbols", []))
+                    confidence = word.get("confidence")
+                    if not text or confidence is None:
+                        continue
+                    # Store the raw reading and its cleaned form ("Dol0" -> "dolo"),
+                    # keeping the lowest: a word read badly anywhere is suspect.
+                    for key in {text.casefold(), normalize_ocr_line(text).casefold()}:
+                        confidences[key] = min(confidences.get(key, 1.0), float(confidence))
+
+
+def _google_vision_text(image, confidences=None):
+    """Read one page with Google Cloud Vision (DOCUMENT_TEXT_DETECTION).
+
+    When ``confidences`` is a dict it is filled with per-word confidence.
+    """
     import base64
 
     key = _google_vision_key()
     if not key:
         raise RuntimeError("GOOGLE_VISION_API_KEY is not set.")
 
-    prepared = ImageOps.exif_transpose(image).convert("RGB")
-    longest = max(prepared.size)
-    if longest > GOOGLE_VISION_MAX_SIDE:
-        scale = GOOGLE_VISION_MAX_SIDE / longest
-        prepared = prepared.resize(
-            (round(prepared.width * scale), round(prepared.height * scale)),
-            Image.LANCZOS,
-        )
+    prepared = preprocess_prescription_image(image)
     buffer = io.BytesIO()
-    prepared.save(buffer, "PNG")
+    prepared.save(buffer, "JPEG", quality=92)
 
     payload = {
         "requests": [{
@@ -206,20 +312,22 @@ def _google_vision_text(image):
     result = (data.get("responses") or [{}])[0]
     if result.get("error"):
         raise RuntimeError("Google Vision error: " + result["error"].get("message", "unknown error"))
+    if confidences is not None:
+        _vision_word_confidences(result, confidences)
     return (result.get("fullTextAnnotation") or {}).get("text", "")
 
 
-def _image_text(image):
+def _image_text(image, confidences=None):
     """Read one page with Google Vision when configured, else local Tesseract."""
     if _google_vision_key():
         try:
-            return _google_vision_text(image), "google-vision"
+            return _google_vision_text(image, confidences), "google-vision"
         except Exception as error:
             print(f"Google Vision OCR failed, falling back to Tesseract: {error}")
     return _ocr_image(image), "tesseract"
 
 
-def _read_pdf(path):
+def _read_pdf(path, confidences=None):
     import fitz
 
     parts = []
@@ -233,20 +341,73 @@ def _read_pdf(path):
                 continue
             pixmap = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0), alpha=False)
             image = Image.open(io.BytesIO(pixmap.tobytes("png")))
-            page_text, provider = _image_text(image)
+            page_text, provider = _image_text(image, confidences)
             parts.append(page_text)
             providers.add(provider)
     return "\n".join(parts), "+".join(sorted(providers))
 
 
-def _read_text(path, suffix):
+def _read_text(path, suffix, confidences=None):
     if suffix == PDF_SUFFIX:
-        return _read_pdf(path)
+        return _read_pdf(path, confidences)
     with Image.open(str(path)) as image:
-        return _image_text(image)
+        return _image_text(image, confidences)
+
+
+# Characters OCR confuses inside numbers ("65O" -> 650, "l0" -> 10) and units
+# ("rng", "mq", "m9" -> mg). Applied only next to digits so words stay intact.
+_DIGIT_LOOKALIKES = {"O": "0", "o": "0", "l": "1", "I": "1", "|": "1"}
+_LETTER_LOOKALIKES = {"0": "o", "1": "l", "5": "s", "8": "b", "3": "e", "4": "a", "6": "g", "7": "t"}
+_UNIT_FIXES = (
+    (re.compile(r"(?<=\d)\s*(?:rng|rnq|nng|rmg|mq|m9|mgs|my)\b", re.I), "mg"),
+    (re.compile(r"(?<=\d)\s*(?:mcq|rncg|mcgs)\b", re.I), "mcg"),
+    (re.compile(r"(?<=\d)\s*(?:rnl|mI|m1)\b"), "ml"),
+)
+_RX_MARKER = re.compile(r"^\s*(?:\u211e|r[x/]\s*[:.)-]?|\d{1,2}\s*[.)]|[-*\u2022])\s*", re.I)
+
+
+def _fix_number_run(match):
+    run = match.group(0)
+    # Only rewrite runs that are clearly numbers: "65O", "5OO", "4O", "l0".
+    # "B12" and "D3" never reach here because a letter precedes the digit.
+    starts_numeric = run[0].isdigit() or (len(run) > 1 and run[0] in "lI|" and run[1].isdigit())
+    if not starts_numeric:
+        return run
+    return "".join(_DIGIT_LOOKALIKES.get(char, char) for char in run)
+
+
+def _fix_word(match):
+    word = match.group(0)
+    letters = sum(char.isalpha() for char in word)
+    # "Parac0tamol" -> "paracotamol" is still closer to the brand than with a 0;
+    # tokens that are mostly digits (strengths) are left to _fix_number_run.
+    if letters < 3 or letters <= len(word) / 2:
+        return word
+    word = re.sub(
+        r"(?<=[A-Za-z])[0-8](?=[A-Za-z])",
+        lambda m: _LETTER_LOOKALIKES.get(m.group(0), m.group(0)),
+        word,
+    )
+    # A single trailing 0 or 1 after a word is a misread o or l ("Dol0", "Calpo1");
+    # two or more digits are a strength written without a space ("Telma40").
+    if re.fullmatch(r"[A-Za-z]{3,}[01]", word):
+        word = word[:-1] + _LETTER_LOOKALIKES[word[-1]]
+    return word
+
+
+def normalize_ocr_line(line):
+    """Undo common OCR/handwriting slips without inventing content."""
+    text = line.replace("\u2014", "-").replace("\u2013", "-")
+    text = re.sub(r"(?<![A-Za-z0-9])[0-9OolI|]*\d[0-9OolI|]*", _fix_number_run, text)
+    text = re.sub(r"[A-Za-z]+\d[A-Za-z0-9]*", _fix_word, text)
+    for pattern, replacement in _UNIT_FIXES:
+        text = pattern.sub(replacement, text)
+    return text
 
 
 def _clean_line(line):
+    line = normalize_ocr_line(line)
+    line = _RX_MARKER.sub("", line)
     return re.sub(r"\s+", " ", line.replace("|", "l")).strip()
 
 
@@ -442,6 +603,202 @@ def _match_token(token, line_strength, cache, form_hint=None, strength_hint=None
     return result
 
 
+_VOCAB_CACHE = {}
+
+
+def _catalog_vocabulary():
+    """Distinct brand words and ingredient names, cached per database file.
+
+    Returns (labels, kinds): parallel lists where kind is "brand" or
+    "ingredient". Built once from the catalog so a handwritten word can be
+    compared with every real name, not only names sharing its first letters.
+    """
+    cache_key = str(database.MEDICINE_DATABASE)
+    cached = _VOCAB_CACHE.get(cache_key)
+    if cached and time.monotonic() - cached[0] < VOCAB_TTL_SECONDS:
+        return cached[1], cached[2]
+
+    vocabulary = {}
+    try:
+        for row in execute_query(
+            "SELECT DISTINCT COALESCE(NULLIF(TRIM(brand_name), ''), medicine_name) AS label FROM medicines"
+        ):
+            words = _name_words(row["label"])
+            if words and len(words[0]) >= FUZZY_MIN_TOKEN and words[0].isalpha():
+                vocabulary.setdefault(words[0], "brand")
+    except Exception as error:
+        print(f"OCR vocabulary: brand list unavailable: {error}")
+    try:
+        for row in execute_query("SELECT DISTINCT ingredient_name_norm AS label FROM medicine_ingredients"):
+            label = " ".join(_name_words(row["label"]))
+            if len(label) >= FUZZY_MIN_TOKEN and not label[0].isdigit():
+                vocabulary[label] = "ingredient"
+    except Exception as error:
+        print(f"OCR vocabulary: ingredient list unavailable: {error}")
+
+    labels = list(vocabulary)
+    kinds = [vocabulary[label] for label in labels]
+    _VOCAB_CACHE[cache_key] = (time.monotonic(), labels, kinds)
+    return labels, kinds
+
+
+def _token_variants(tokens):
+    """Single words plus joined neighbours, since handwriting splits names."""
+    variants = []
+    for index, token in enumerate(tokens):
+        if len(token) >= FUZZY_MIN_TOKEN:
+            variants.append(token.casefold())
+        if index + 1 < len(tokens):
+            joined = (token + tokens[index + 1]).casefold()
+            if len(joined) <= 16:
+                variants.append(joined)
+    if len(tokens) >= 2:
+        variants.append(" ".join(tokens[:2]).casefold())  # "clavulanic acid"
+    return list(dict.fromkeys(variants))
+
+
+def _suggest_matches(line, tokens, strength, form_hint, cache):
+    """Rank catalog medicines that a garbled printed line probably names.
+
+    Each word is compared with every catalog brand word and ingredient name
+    (Levenshtein ratio). The best names are then resolved to a product with
+    the same literal lookup used for clean text, preferring the printed
+    strength. Scores are the computed name similarity, 0-100.
+    """
+    labels, kinds = _catalog_vocabulary()
+    if not labels:
+        return []
+
+    hits = {}
+    for variant in _token_variants(tokens):
+        for label, score, index in process.extract(
+            variant, labels, scorer=fuzz.ratio, score_cutoff=SUGGEST_CUTOFF, limit=5
+        ):
+            if score > hits.get(label, (0, None))[0]:
+                hits[label] = (score, kinds[index], variant)
+
+    target_strength = normalize_measure(strength) if strength else None
+    strength_number = _strength_number(strength)
+    suggestions = {}
+    for label, (score, kind, variant) in sorted(hits.items(), key=lambda item: -item[1][0])[:5]:
+        hint = strength_number
+        if not hint:
+            for token in tokens:
+                if token.casefold() in variant:
+                    hint = _adjacent_strength(line, token)
+                    if hint:
+                        break
+        found = _match_token(label, strength, cache, form_hint, hint)
+        if kind == "ingredient" and (strength_number or hint) and (
+            not found or _strength_state(found[0], target_strength, strength_number or hint) is not True
+        ):
+            # "Paracetamol 650" should offer a 650 product by composition, not
+            # the first product that merely has paracetamol in its name.
+            found = _ingredient_product(label, target_strength, strength_number or hint, form_hint) or found
+        if found:
+            row = found[0]
+            strength_ok = _strength_state(row, target_strength, strength_number or hint)
+            form_ok = not form_hint or form_hint in str(row["dosage_form"] or "").casefold()
+            key = row["id"]
+            entry = {
+                "medicine_id": row["id"],
+                "name": row["medicine_name"],
+                "brand": row["brand_name"],
+                "strength": row["strength"],
+                "dosage_form": row["dosage_form"],
+                "price": row["price"],
+                "prescription_required": row["prescription_required"],
+                "matched_text": label,
+                "kind": kind,
+                "score": round(float(score), 1),
+                "strength_match": strength_ok,
+                "form_match": form_ok,
+            }
+        elif kind == "ingredient":
+            query = f"{label} {strength_number}" if strength_number else label
+            key = "q:" + query
+            entry = {
+                "medicine_id": None,
+                "name": label.title() + (f" {strength}" if strength else ""),
+                "matched_text": label,
+                "query": query,
+                "kind": kind,
+                "score": round(float(score), 1),
+                "strength_match": None,
+                "form_match": None,
+            }
+        else:
+            continue
+        if key not in suggestions or entry["score"] > suggestions[key]["score"]:
+            suggestions[key] = entry
+
+    def rank(entry):
+        return (
+            -entry["score"]
+            - (6 if entry["strength_match"] is True else 0)
+            + (10 if entry["strength_match"] is False else 0)
+            + (4 if entry["form_match"] is False else 0)
+        )
+
+    return sorted(suggestions.values(), key=rank)[:SUGGEST_LIMIT]
+
+
+def _ingredient_product(ingredient, target_strength, strength_number, form_hint):
+    """Cheapest single-ingredient catalog product with the printed strength."""
+    query = f"{ingredient} {strength_number}"
+    try:
+        rows = search_medicines(query, limit=15, enable_api_fallback=False)
+    except Exception:
+        return None
+    ranked = []
+    for row in rows:
+        if _strength_state(row, target_strength, strength_number) is not True:
+            continue
+        form_ok = not form_hint or form_hint in str(row["dosage_form"] or "").casefold()
+        price = row["price"] if row["price"] else float("inf")
+        ranked.append((0 if form_ok else 1, price, row))
+    if not ranked:
+        return None
+    ranked.sort(key=lambda item: (item[0], item[1]))
+    return (ranked[0][2], "partial", None)
+
+
+def _auto_accept(suggestions, strength, form_hint):
+    """Promote the top suggestion only when it is clearly the printed medicine.
+
+    It must be a catalog product, very similar in spelling, agree with the
+    printed strength and form, and beat the next product by a clear margin.
+    It is still labelled "possible" so the user confirms it.
+    """
+    if not suggestions or not (strength or form_hint):
+        return None
+    top = suggestions[0]
+    if not top.get("medicine_id") or top["score"] < AUTO_ACCEPT_SCORE:
+        return None
+    if strength and top["strength_match"] is not True:
+        return None
+    if top["form_match"] is False:
+        return None
+    rivals = [entry for entry in suggestions[1:] if entry.get("medicine_id")]
+    if rivals and rivals[0]["score"] > top["score"] - AUTO_ACCEPT_GAP and rivals[0]["matched_text"] != top["matched_text"]:
+        return None
+    return top
+
+
+def _line_confidence(line, confidences):
+    """Mean Vision word confidence (0-100) for a line, or None without data."""
+    if not confidences:
+        return None
+    values = [
+        confidences[word.casefold()]
+        for word in re.findall(r"\S+", line)
+        if word.casefold() in confidences
+    ]
+    if not values:
+        return None
+    return round(100 * sum(values) / len(values), 1)
+
+
 def _dosage_text(line):
     found = []
     spans = []
@@ -487,7 +844,7 @@ def _name_tokens(line):
     return tokens
 
 
-def _extract_medicines(text):
+def _extract_medicines(text, confidences=None):
     lines = _candidate_lines(text)
     cache = {}
     medicines = []
@@ -517,15 +874,41 @@ def _extract_medicines(text):
                 matched_hint = hint
                 break
 
+        line_confidence = _line_confidence(line, confidences)
         if not match:
             long_token = any(len(token) >= 4 for token in tokens)
             listable = strength or form_hint or (2 <= len(tokens) <= 8 and long_token)
-            if len(unmatched) < MAX_UNMATCHED and listable:
-                unmatched.append({
-                    "text": line[:160],
-                    "strength": strength,
-                    "query": tokens[0] if tokens else line[:40],
+            if not listable or len(unmatched) >= MAX_UNMATCHED:
+                continue
+            suggestions = _suggest_matches(line, tokens, strength, form_hint, cache) if long_token else []
+            accepted = _auto_accept(suggestions, strength, form_hint)
+            if accepted and accepted["medicine_id"] not in seen_ids:
+                seen_ids.add(accepted["medicine_id"])
+                medicines.append({
+                    "medicine_id": accepted["medicine_id"],
+                    "name": accepted["name"],
+                    "matched_text": accepted["matched_text"],
+                    "brand": accepted["brand"],
+                    "strength": accepted["strength"],
+                    "dosage_form": accepted["dosage_form"],
+                    "price": accepted["price"],
+                    "prescription_required": accepted["prescription_required"],
+                    "match_type": "possible",
+                    "match_score": accepted["score"],
+                    "strength_match": accepted["strength_match"],
+                    "ocr_confidence": line_confidence,
+                    "dosage_text": _dosage_text(line),
+                    "source_line": line[:160],
+                    "alternatives": [entry for entry in suggestions if entry is not accepted],
                 })
+                continue
+            unmatched.append({
+                "text": line[:160],
+                "strength": strength,
+                "query": tokens[0] if tokens else line[:40],
+                "ocr_confidence": line_confidence,
+                "suggestions": suggestions,
+            })
             continue
 
         token, (row, match_type, match_score) = match
@@ -558,8 +941,10 @@ def _extract_medicines(text):
             "match_type": effective_match_type,
             "match_score": match_score,
             "strength_match": strength_match,
+            "ocr_confidence": line_confidence,
             "dosage_text": _dosage_text(line),
             "source_line": line[:160],
+            "alternatives": [],
         })
 
     return medicines, unmatched
@@ -583,9 +968,10 @@ def parse_prescription_medicines(file_storage):
     stored_path = UPLOAD_DIR / f"{uuid.uuid4().hex}{suffix}"
     text = ""
     provider = ""
+    confidences = {}
     try:
         file_storage.save(str(stored_path))
-        text, provider = _read_text(stored_path, suffix)
+        text, provider = _read_text(stored_path, suffix, confidences)
     except UnidentifiedImageError:
         return _failure(display_name, "The image could not be opened. Try a PNG or JPG photo.")
     except RuntimeError as error:
@@ -611,9 +997,9 @@ def parse_prescription_medicines(file_storage):
             provider,
         )
 
-    medicines, unmatched = _extract_medicines(text)
+    medicines, unmatched = _extract_medicines(text, confidences)
     if medicines:
-        message = "Review each match against the printed prescription before acting on it."
+        message = "Confirm each match against the paper prescription, or change it, before acting on it."
     else:
         message = (
             "Text was read, but no medicine matched the local catalog. "

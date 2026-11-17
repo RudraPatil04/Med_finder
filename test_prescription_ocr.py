@@ -320,6 +320,7 @@ class PrescriptionOcrTests(unittest.TestCase):
         self.assertEqual(kwargs["headers"], {"X-Goog-Api-Key": "secret-key"})
         payload = kwargs["json"]["requests"][0]
         self.assertEqual(payload["features"][0]["type"], "DOCUMENT_TEXT_DETECTION")
+        self.assertEqual(payload["imageContext"]["languageHints"], ["en"])
         self.assertTrue(payload["image"]["content"])
 
     def test_falls_back_to_tesseract_when_google_vision_fails(self):
@@ -331,6 +332,84 @@ class PrescriptionOcrTests(unittest.TestCase):
 
         self.assertEqual(text, "Local text")
         self.assertEqual(provider, "tesseract")
+
+    def test_ocr_slips_in_numbers_and_units_are_corrected(self):
+        self.assertEqual(ocr_service._clean_line("Rx Dolo 5OO rng"), "Dolo 500mg")
+        self.assertEqual(ocr_service._clean_line("1) Pan 4O mg OD"), "Pan 40 mg OD")
+        self.assertEqual(ocr_service._clean_line("Tab Dol0 650"), "Tab Dolo 650")
+        # Vitamin names and strengths written without a space stay as written.
+        self.assertEqual(ocr_service._clean_line("Inj B12 1ml"), "Inj B12 1ml")
+        self.assertEqual(ocr_service._clean_line("Vit D3 60000 IU"), "Vit D3 60000 IU")
+        self.assertEqual(ocr_service._clean_line("Tab Telma40 OD"), "Tab Telma40 OD")
+
+    def test_misread_letter_in_brand_still_matches_exactly(self):
+        medicines, _ = ocr_service._extract_medicines("Tab Dol0 650 1-0-1\n")
+
+        self.assertEqual([item["name"] for item in medicines], ["Dolo 650 Tablet"])
+        self.assertEqual(medicines[0]["match_type"], "exact")
+
+    def test_misspelled_ingredient_offers_product_with_printed_strength(self):
+        medicines, _ = ocr_service._extract_medicines("Tab Paracetmol 65O mg 1-0-1\n")
+
+        self.assertEqual([item["name"] for item in medicines], ["Dolo 650 Tablet"])
+        self.assertEqual(medicines[0]["match_type"], "possible")
+        self.assertTrue(medicines[0]["strength_match"])
+
+    def test_handwriting_typo_in_first_letters_is_matched_as_possible(self):
+        medicines, _ = ocr_service._extract_medicines("T. Pantoprazol 4O mg OD\n")
+
+        self.assertEqual([item["name"] for item in medicines], ["Pantoprazole 40 Tablet"])
+        self.assertEqual(medicines[0]["match_type"], "possible")
+
+    def test_unclear_line_lists_suggestions_instead_of_asserting(self):
+        self._insert("Montair LC Tablet", "Montair", "10mg", "Tablet",
+                     "Montelukast (10mg) + Levocetirizine (5mg)")
+        self._insert("Montek LC Tablet", "Montek", "10mg", "Tablet",
+                     "Montelukast (10mg) + Levocetirizine (5mg)")
+
+        medicines, unmatched = ocr_service._extract_medicines("Tab Montak LC 0-0-1\n")
+
+        self.assertEqual(medicines, [])
+        self.assertEqual(len(unmatched), 1)
+        names = [entry["name"] for entry in unmatched[0]["suggestions"]]
+        self.assertIn("Montek LC Tablet", names)
+        self.assertIn("Montair LC Tablet", names)
+        self.assertTrue(all(isinstance(entry["score"], float) for entry in unmatched[0]["suggestions"]))
+
+    def test_suggestions_degrade_when_catalog_tables_are_missing(self):
+        empty = Path(self.temp_dir.name) / "empty.db"
+        sqlite3.connect(empty).close()
+        with patch.object(database, "MEDICINE_DATABASE", empty):
+            self.assertEqual(ocr_service._catalog_vocabulary(), ([], []))
+
+    def test_vision_word_confidence_is_attached_to_the_line(self):
+        confidences = {}
+        ocr_service._vision_word_confidences({"fullTextAnnotation": {"pages": [{"blocks": [{"paragraphs": [{
+            "words": [
+                {"confidence": 0.5, "symbols": [{"text": "D"}, {"text": "o"}, {"text": "l"}, {"text": "0"}]},
+                {"confidence": 0.9, "symbols": [{"text": "6"}, {"text": "5"}, {"text": "0"}]},
+            ]
+        }]}]}]}}, confidences)
+
+        self.assertEqual(confidences["dolo"], 0.5)
+        medicines, _ = ocr_service._extract_medicines("Tab Dol0 650\n", confidences)
+        self.assertEqual(medicines[0]["ocr_confidence"], 70.0)
+
+    def test_preprocessing_crops_dark_background_and_upscales(self):
+        photo = Image.new("RGB", (1000, 800), (40, 40, 40))
+        photo.paste(Image.new("RGB", (600, 500), (245, 245, 240)), (200, 160))
+
+        prepared = ocr_service.preprocess_prescription_image(photo)
+
+        self.assertEqual(prepared.mode, "L")
+        self.assertGreaterEqual(max(prepared.size), ocr_service.PREPROCESS_MIN_SIDE)
+        ratio = prepared.width / prepared.height
+        self.assertAlmostEqual(ratio, 600 / 500, delta=0.08)
+
+    def test_preprocessing_keeps_a_plain_scan_whole(self):
+        scan = Image.new("RGB", (1800, 1200), "white")
+        prepared = ocr_service.preprocess_prescription_image(scan)
+        self.assertEqual(prepared.size, (1800, 1200))
 
     def test_unsupported_file_type_is_rejected(self):
         result = ocr_service.parse_prescription_medicines(self._dummy_upload("notes.txt"))

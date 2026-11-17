@@ -618,14 +618,131 @@
             announce("Scanner reset. Choose a prescription to scan.");
         });
 
-        detectedList.addEventListener("click", function (event) {
-            const remove = event.target.closest("[data-remove-detected]");
-            if (!remove) return;
-            const row = remove.closest("[data-detected]");
-            if (row) row.remove();
-            if (!detectedList.querySelector("[data-detected]")) {
-                detectedList.innerHTML = emptyState("No medicines left", "Scan another prescription or search manually.");
+        function updateConfirmSummary() {
+            const summary = document.getElementById("confirmSummary");
+            if (!summary) return;
+            const rows = detectedList.querySelectorAll("[data-detected]");
+            const confirmed = detectedList.querySelectorAll("[data-detected].confirmed");
+            summary.hidden = rows.length === 0;
+            summary.textContent = confirmed.length + " of " + rows.length + " confirmed. Check each one against the paper prescription.";
+        }
+
+        function addDetected(item, confirmed) {
+            const empty = detectedList.querySelector(".empty-state");
+            if (empty) empty.remove();
+            detectedList.insertAdjacentHTML("beforeend", renderDetectedMedicine(item, confirmed));
+            detectedPanel.hidden = false;
+            updateConfirmSummary();
+        }
+
+        function replaceDetected(row, item) {
+            row.insertAdjacentHTML("afterend", renderDetectedMedicine(item, true));
+            row.remove();
+            updateConfirmSummary();
+        }
+
+        async function runCorrection(form) {
+            const input = form.querySelector("input");
+            const results = form.parentElement.querySelector("[data-correct-results]");
+            const query = input.value.trim();
+            if (!query) return;
+            results.innerHTML = '<small>Searching…</small>';
+            const response = await fetchJson("/api/search?q=" + encodeURIComponent(query));
+            const rows = (response && response.data) || [];
+            if (!rows.length) {
+                results.innerHTML = '<small>No catalog medicine found for "' + escapeHtml(query) + '".</small>';
+                announce("No catalog medicine found for " + query + ".");
+                return;
             }
+            results.innerHTML = rows.slice(0, 5).map(function (row) {
+                return scanChip(registerCandidate({
+                    medicine_id: row.id,
+                    name: row.medicine_name,
+                    brand: row.brand_name,
+                    strength: row.strength,
+                    dosage_form: row.dosage_form,
+                    price: row.price,
+                    prescription_required: row.prescription_required,
+                    matched_text: query,
+                    match_type: "user",
+                    source_line: form.dataset.sourceLine || ""
+                }), row.medicine_name + (row.strength ? " · " + row.strength : ""), null);
+            }).join("");
+            announce(Math.min(rows.length, 5) + " catalog options found. Choose the one on the prescription.");
+        }
+
+        function handleScanClick(event) {
+            const pick = event.target.closest("[data-pick]");
+            if (pick) {
+                const item = Object.assign({}, scanCandidates[pick.dataset.pick] || {});
+                if (!item.medicine_id && item.query) {
+                    window.location.href = "/search?q=" + encodeURIComponent(item.query);
+                    return;
+                }
+                item.match_type = "user";
+                const detectedRow = pick.closest("[data-detected]");
+                const unmatchedRow = pick.closest("[data-unmatched]");
+                if (detectedRow) {
+                    item.source_line = item.source_line || detectedRow.dataset.sourceLine || "";
+                    replaceDetected(detectedRow, item);
+                } else {
+                    if (unmatchedRow) {
+                        item.source_line = item.source_line || unmatchedRow.dataset.sourceLine || "";
+                        unmatchedRow.remove();
+                        if (!unmatchedList.querySelector("[data-unmatched]")) unmatchedPanel.hidden = true;
+                    }
+                    addDetected(item, true);
+                }
+                announce((item.name || "Medicine") + " confirmed.");
+                return;
+            }
+
+            const confirm = event.target.closest("[data-confirm-detected]");
+            if (confirm) {
+                const row = confirm.closest("[data-detected]");
+                const on = !row.classList.contains("confirmed");
+                row.classList.toggle("confirmed", on);
+                confirm.textContent = on ? "Confirmed ✓" : "Confirm";
+                confirm.setAttribute("aria-pressed", on ? "true" : "false");
+                updateConfirmSummary();
+                announce((row.dataset.name || "Medicine") + (on ? " confirmed." : " no longer confirmed."));
+                return;
+            }
+
+            const change = event.target.closest("[data-change-detected]");
+            if (change) {
+                const row = change.closest("[data-detected], [data-unmatched]");
+                const panel = row.querySelector("[data-correct-panel]");
+                panel.hidden = !panel.hidden;
+                if (!panel.hidden) {
+                    const input = panel.querySelector("input");
+                    input.focus();
+                    input.select();
+                }
+                return;
+            }
+
+            const remove = event.target.closest("[data-remove-detected]");
+            if (remove) {
+                const row = remove.closest("[data-detected]");
+                if (row) row.remove();
+                if (!detectedList.querySelector("[data-detected]")) {
+                    detectedList.innerHTML = emptyState("No medicines left", "Scan another prescription or search manually.");
+                }
+                updateConfirmSummary();
+            }
+        }
+
+        function handleScanSubmit(event) {
+            const form = event.target.closest("[data-correct-form]");
+            if (!form) return;
+            event.preventDefault();
+            runCorrection(form);
+        }
+
+        [detectedList, unmatchedList].forEach(function (list) {
+            list.addEventListener("click", handleScanClick);
+            list.addEventListener("submit", handleScanSubmit);
         });
 
         function showExtractedText(text, provider) {
@@ -685,10 +802,12 @@
             setText("scanCopy", response.message || "Review the detected items below.");
 
             const items = response.data || [];
+            scanCandidates = {};
             detectedList.innerHTML = items.length
-                ? items.map(renderDetectedMedicine).join("")
+                ? items.map(function (item) { return renderDetectedMedicine(item, false); }).join("")
                 : emptyState("No medicines matched", "Check the printed lines below or search manually.");
             detectedPanel.hidden = false;
+            updateConfirmSummary();
 
             const unmatched = response.unmatched_lines || [];
             unmatchedList.innerHTML = unmatched.map(renderUnmatchedLine).join("");
@@ -888,7 +1007,48 @@
             '</div></section>';
     }
 
-    function renderDetectedMedicine(item) {
+    let scanCandidates = {};
+    let scanCandidateSeq = 0;
+
+    function registerCandidate(item) {
+        scanCandidateSeq += 1;
+        const key = "c" + scanCandidateSeq;
+        scanCandidates[key] = item;
+        return key;
+    }
+
+    function scoreText(item) {
+        const parts = [];
+        if (item.ocr_confidence != null) parts.push("Read confidence " + Math.round(item.ocr_confidence) + "%");
+        if (item.match_score != null) parts.push("Name similarity " + Math.round(item.match_score) + "%");
+        return parts.join(" · ");
+    }
+
+    function scanChip(key, label, score) {
+        return '<button class="btn btn-outline btn-sm scan-chip" type="button" data-pick="' + key + '">' +
+            escapeHtml(label) + (score != null ? ' <span class="chip-score">' + Math.round(score) + '%</span>' : '') + '</button>';
+    }
+
+    function suggestionChips(list, sourceLine) {
+        return (list || []).map(function (entry) {
+            const label = entry.name + (entry.medicine_id ? "" : " (search)");
+            return scanChip(registerCandidate(Object.assign({}, entry, {
+                match_score: entry.score,
+                source_line: sourceLine
+            })), label, entry.score);
+        }).join("");
+    }
+
+    function correctPanel(query, sourceLine) {
+        return '<div class="correct-panel" data-correct-panel hidden>' +
+            '<form class="correct-form" data-correct-form data-source-line="' + escapeHtml(sourceLine || "") + '">' +
+            '<label class="sr-only">Type the medicine name as written</label>' +
+            '<input type="search" value="' + escapeHtml(query || "") + '" placeholder="Type the medicine name">' +
+            '<button class="btn btn-gradient btn-sm" type="submit">Find</button></form>' +
+            '<div class="scan-chips" data-correct-results></div></div>';
+    }
+
+    function renderDetectedMedicine(item, confirmed) {
         const name = item.name || item.medicine_name || "Detected medicine";
         const details = [item.strength, item.dosage_form].filter(Boolean).join(" · ");
         const dosage = item.dosage_text || "Dosage not detected - confirm on the prescription";
@@ -896,22 +1056,33 @@
         const medicineId = item.medicine_id || item.id;
         const exact = item.match_type === "exact";
         const close = item.match_type === "possible";
+        const user = item.match_type === "user";
         const strengthDiffers = item.strength_match === false;
-        const matchLabel = strengthDiffers
-            ? "Possible match — check strength"
-            : exact ? "Name match" : close ? "Close match — verify" : "Possible match";
-        const badgeClass = strengthDiffers
-            ? "warning"
-            : exact ? "exact" : close ? "possible" : "partial";
-        return '<div class="detected-item" data-detected><span class="feature-icon soft"><span class="icon icon-pill"></span></span>' +
+        const lowRead = item.ocr_confidence != null && item.ocr_confidence < 70;
+        const matchLabel = user ? "Chosen by you"
+            : strengthDiffers ? "Possible match — check strength"
+            : exact ? (lowRead ? "Name match — faint text" : "Name match")
+            : close ? "Close match — verify" : "Possible match";
+        const badgeClass = user ? "exact"
+            : strengthDiffers ? "warning"
+            : exact && !lowRead ? "exact" : close ? "possible" : "partial";
+        const scores = scoreText(item);
+        const alternatives = suggestionChips(item.alternatives, item.source_line);
+        return '<div class="detected-item' + (confirmed ? ' confirmed' : '') + '" data-detected data-name="' + escapeHtml(name) + '" data-source-line="' + escapeHtml(item.source_line || "") + '">' +
+            '<span class="feature-icon soft"><span class="icon icon-pill"></span></span>' +
             '<div class="min-grow"><strong>' + escapeHtml(name) + '</strong>' +
             (details ? '<small>' + escapeHtml(details) + '</small>' : '') +
             '<small>' + escapeHtml(dosage) + '</small>' +
-            '<small class="ocr-source">' + escapeHtml(printed) + '</small></div>' +
+            '<small class="ocr-source">' + escapeHtml(printed) + '</small>' +
+            (scores ? '<small class="scan-scores">' + escapeHtml(scores) + '</small>' : '') +
+            (alternatives ? '<div class="scan-chips"><small>Or did the prescription say:</small>' + alternatives + '</div>' : '') +
+            correctPanel(item.matched_text || name, item.source_line) +
+            '</div>' +
             '<div class="detected-actions">' +
             '<span class="match-badge ' + badgeClass + '">' + matchLabel + '</span>' +
+            '<button class="btn btn-gradient btn-sm" type="button" data-confirm-detected aria-pressed="' + (confirmed ? 'true' : 'false') + '">' + (confirmed ? 'Confirmed ✓' : 'Confirm') + '</button>' +
+            '<button class="btn btn-outline btn-sm" type="button" data-change-detected>Change</button>' +
             (medicineId ? '<a class="btn btn-outline btn-sm" href="/medicine/' + encodeURIComponent(medicineId) + '">View</a>' : '') +
-            '<a class="btn btn-outline btn-sm" href="/search?q=' + encodeURIComponent(item.matched_text || name) + '">Search</a>' +
             '<button class="btn btn-quiet btn-sm" type="button" data-remove-detected>Remove</button>' +
             '</div></div>';
     }
@@ -919,9 +1090,16 @@
     function renderUnmatchedLine(item) {
         const printed = item.text || "Unreadable line";
         const query = item.query || printed;
-        return '<div><span class="feature-icon soft"><span class="icon icon-file"></span></span>' +
-            '<div class="min-grow"><strong>' + escapeHtml(printed) + '</strong><small>Not matched to a catalog medicine</small></div>' +
-            '<div class="detected-actions"><a class="btn btn-outline btn-sm" href="/search?q=' + encodeURIComponent(query) + '">Search</a></div></div>';
+        const chips = suggestionChips(item.suggestions, printed);
+        const read = item.ocr_confidence != null ? " · Read confidence " + Math.round(item.ocr_confidence) + "%" : "";
+        return '<div data-unmatched data-source-line="' + escapeHtml(printed) + '"><span class="feature-icon soft"><span class="icon icon-file"></span></span>' +
+            '<div class="min-grow"><strong>' + escapeHtml(printed) + '</strong>' +
+            '<small>' + (chips ? 'Not sure which medicine this is. Tap the one written on the prescription.' : 'Not matched to a catalog medicine') + escapeHtml(read) + '</small>' +
+            (chips ? '<div class="scan-chips">' + chips + '</div>' : '') +
+            correctPanel(query, printed) +
+            '</div>' +
+            '<div class="detected-actions"><button class="btn btn-outline btn-sm" type="button" data-change-detected>Type it</button>' +
+            '<a class="btn btn-outline btn-sm" href="/search?q=' + encodeURIComponent(query) + '">Search</a></div></div>';
     }
 
     function normalizeMedicine(item) {
