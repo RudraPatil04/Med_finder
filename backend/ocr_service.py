@@ -101,6 +101,8 @@ _HEADER_WORDS = re.compile(
     r"registration|regn|regd|mci|council|signature|stamp|seal|diagnosis|advice|"
     r"investigation|investigations|follow[\s-]?up|consultation|date|complaint|vitals|"
     r"weight|height|pulse|temperature|allergy|allergies|"
+    # Clinical-note words (complaints, findings, advice) are never medicine names.
+    r"giddiness|restlessness|hypoglyc\w*|hyperglyc\w*|rbs|impression|imp|adv|intake|fluid|stat|"
     r"tower|road|street|lane|nagar|colony|sector|village|district|city|pincode|pin|"
     r"building|complex|plaza|market|chowk|apartment|plot|opposite|opp|near|"
     r"landline|telephone|fax|website|www|"
@@ -833,6 +835,35 @@ def _candidate_lines(text):
     return rows
 
 
+def _looks_garbled(line):
+    """True for OCR noise such as 'Be soe Negere 7) 48. @) l'.
+
+    Printed medicine lines are mostly real words; handwriting read by a printed-text
+    engine comes out as symbols and short fragments. Used only for lines with no
+    printed strength or dosage form, so '2 Tab Dolo 650 bd' is never affected.
+    """
+    words = line.split()
+    visible = sum(len(word) for word in words)
+    if not words or not visible:
+        return True
+    letters = sum(char.isalpha() for char in line)
+    real_words = sum(1 for word in words if re.fullmatch(r"[A-Za-z]{3,}", word))
+    return letters / visible < 0.6 or real_words / len(words) <= 0.5
+
+
+def _handwriting_suspected(text):
+    """True when most of the text is noise, so no match should be trusted."""
+    lines = [_clean_line(raw) for raw in text.splitlines()]
+    lines = [line for line in lines if len(line) >= 4]
+    if len(lines) < 3:
+        return False
+    garbled = sum(
+        1 for line in lines
+        if not (_line_strength(line) or _form_hint(line)) and _looks_garbled(line)
+    )
+    return garbled / len(lines) >= 0.5
+
+
 def _name_tokens(line):
     tokens = []
     for token in _NAME_TOKEN.findall(line):
@@ -884,6 +915,8 @@ def _extract_medicines(text, confidences=None):
             listable = strength or form_hint or (2 <= len(tokens) <= 8 and long_token)
             if not listable or len(unmatched) >= MAX_UNMATCHED:
                 continue
+            if not (strength or form_hint) and _looks_garbled(line):
+                continue  # noise, not a printed name: offer no suggestions for it
             suggestions = _suggest_matches(line, tokens, strength, form_hint, cache) if long_token else []
             accepted = _auto_accept(suggestions, strength, form_hint)
             if accepted and accepted["medicine_id"] not in seen_ids:
@@ -1007,6 +1040,15 @@ def parse_prescription_medicines(file_storage):
         )
 
     medicines, unmatched = _extract_medicines(text, confidences)
+    warning = None
+    if _handwriting_suspected(text):
+        warning = (
+            "This looks handwritten or too unclear to read reliably, so any names below "
+            "are guesses. Ask your pharmacist or doctor to read it, or type the names yourself."
+        )
+        if provider == "tesseract":
+            warning += (" A cloud handwriting reader (Google Vision) is not enabled on this "
+                        "server; it handles handwriting better than the local reader.")
     if medicines:
         message = "Confirm each match against the paper prescription, or change it, before acting on it."
     else:
@@ -1024,4 +1066,5 @@ def parse_prescription_medicines(file_storage):
         "data": medicines,
         "unmatched_lines": unmatched,
         "provider": provider,
+        "warning": warning,
     }

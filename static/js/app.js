@@ -822,7 +822,7 @@
 
             setText("scanStateLabel", "Scan complete");
             setText("scanTitle", response.count ? "Medicines detected" : "No catalog match found");
-            setText("scanCopy", response.message || "Review the detected items below.");
+            setText("scanCopy", (response.warning ? response.warning + " " : "") + (response.message || "Review the detected items below."));
 
             const items = response.data || [];
             scanCandidates = {};
