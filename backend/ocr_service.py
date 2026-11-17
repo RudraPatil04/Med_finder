@@ -869,7 +869,11 @@ def _extract_medicines(text, confidences=None):
             hint = _adjacent_strength(line, token)
             name_hint = tokens[index + 1] if index + 1 < len(tokens) else None
             candidate = _match_token(token, strength, cache, form_hint, hint, name_hint)
-            if candidate and (has_context or (len(token) >= 5 and candidate[1] == "exact")):
+            # A brand is accepted only when this line also prints a strength (with
+            # or without a unit: "Dolo 650") or a dosage form. A brand name that is
+            # also an ordinary word ("Further", "Format") is otherwise matched
+            # inside any sentence.
+            if candidate and (has_context or hint):
                 match = (token, candidate)
                 matched_hint = hint
                 break
@@ -925,8 +929,13 @@ def _extract_medicines(text, confidences=None):
 
         # A printed strength that contradicts the row means the name alone is not
         # enough to confirm the product, even when the name matches exactly.
+        # A name with no printed strength at all is never "exact" either: the line
+        # does not say which product was written.
+        printed_strength = bool(strength or matched_hint)
         effective_match_type = (
-            "possible" if match_type == "exact" and strength_match is False else match_type
+            "possible"
+            if match_type == "exact" and (strength_match is False or not printed_strength)
+            else match_type
         )
 
         medicines.append({

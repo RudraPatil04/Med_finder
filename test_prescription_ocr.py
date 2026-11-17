@@ -210,13 +210,49 @@ class PrescriptionOcrTests(unittest.TestCase):
         self.assertEqual(medicines, [])
         self.assertEqual(unmatched, [])
 
-    def test_bare_brand_line_without_strength_or_form_is_matched(self):
+    def test_bare_brand_line_without_strength_or_form_is_not_matched(self):
         self._insert("Ibugesic Plus Tablet", "Ibugesic", "400mg", "Tablet",
                      "Ibuprofen (400mg) + Paracetamol (325mg)")
 
-        medicines, _ = ocr_service._extract_medicines("Ibugesic Plus\n")
+        medicines, unmatched = ocr_service._extract_medicines("Ibugesic Plus\n")
 
-        self.assertEqual([item["name"] for item in medicines], ["Ibugesic Plus Tablet"])
+        # No strength or dosage form on the line: listed for review, never asserted.
+        self.assertEqual(medicines, [])
+        self.assertEqual([line["text"] for line in unmatched], ["Ibugesic Plus"])
+
+    def test_ordinary_words_that_are_brand_names_are_not_matched_in_prose(self):
+        self._insert("Further L 75mg/20mg Capsule", "Further L", "75mg", "Capsule",
+                     "Pregabalin (75mg) + Methylcobalamin (20mg)")
+        self._insert("Format 1000mg Tablet SR", "Format", "1000mg", "Tablet",
+                     "Metformin (1000mg)")
+
+        medicines, _ = ocr_service._extract_medicines(
+            "age or processing system) for further l Key Considerations\n"
+            "e Data format\n"
+            "Ensure the destination system supports the format or requires transformation.\n"
+        )
+
+        self.assertEqual(medicines, [])
+
+    def test_ordinary_word_is_still_matched_when_the_line_prints_a_strength(self):
+        self._insert("Format 1000mg Tablet SR", "Format", "1000mg", "Tablet",
+                     "Metformin (1000mg)")
+
+        medicines, _ = ocr_service._extract_medicines("Tab Format 1000 mg 1-0-1\n")
+
+        self.assertEqual([item["name"] for item in medicines], ["Format 1000mg Tablet SR"])
+
+    def test_match_without_a_printed_strength_is_never_exact(self):
+        medicines, _ = ocr_service._extract_medicines("Tab Dolo 1-0-1\n")
+
+        self.assertEqual([item["name"] for item in medicines], ["Dolo 650 Tablet"])
+        self.assertEqual(medicines[0]["match_type"], "possible")
+
+    def test_unitless_strength_still_counts_as_printed(self):
+        medicines, _ = ocr_service._extract_medicines("Dolo 650\n")
+
+        self.assertEqual([item["name"] for item in medicines], ["Dolo 650 Tablet"])
+        self.assertEqual(medicines[0]["match_type"], "exact")
 
     def test_doctor_name_is_not_matched_to_a_medicine_that_contains_it(self):
         self._insert("Pramodep 50mg Tablet", "Pramodep", "50mg", "Tablet", "Pramipexole (50mg)")
