@@ -39,6 +39,20 @@ OCR_TIMEOUT_SECONDS = 40
 GOOGLE_VISION_URL = "https://vision.googleapis.com/v1/images:annotate"
 GOOGLE_VISION_TIMEOUT_SECONDS = 20
 GOOGLE_VISION_MAX_SIDE = 2400
+# Gemini (Google AI Studio, free tier) reads handwriting far better than OCR.
+# The key comes from GEMINI_API_KEY and is never stored in the repository.
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+GEMINI_DEFAULT_MODEL = "gemini-2.5-flash"
+GEMINI_TIMEOUT_SECONDS = 45
+GEMINI_PROMPT = (
+    "This is a photo of a doctor's prescription, possibly handwritten. "
+    "Transcribe every medicine line exactly as written, one medicine per line, in the form: "
+    "<form> <medicine name> <strength> <dosage schedule> <duration>, for example "
+    "'Tab Dolo 650 mg 1-0-1 x 5 days'. Keep the brand name as written; when a letter is "
+    "unclear, write your best reading of the word. Do not add medicines that are not on the "
+    "page, do not suggest substitutes, and skip the doctor, clinic, patient and address lines. "
+    "Output plain text only, no numbering, no markdown. If no medicine is written, output NONE."
+)
 # Phone photos are usually larger than this; small scans are upscaled so thin
 # handwriting strokes stay several pixels wide.
 PREPROCESS_TARGET_SIDE = 2000
@@ -317,8 +331,74 @@ def _google_vision_text(image, confidences=None):
     return (result.get("fullTextAnnotation") or {}).get("text", "")
 
 
+def _gemini_key():
+    return os.environ.get("GEMINI_API_KEY", "").strip()
+
+
+def _gemini_text(image):
+    """Read one page with Gemini and return its line-by-line transcription."""
+    import base64
+
+    key = _gemini_key()
+    if not key:
+        raise RuntimeError("GEMINI_API_KEY is not set.")
+    model = os.environ.get("GEMINI_MODEL", "").strip() or GEMINI_DEFAULT_MODEL
+
+    prepared = preprocess_prescription_image(image)
+    buffer = io.BytesIO()
+    prepared.save(buffer, "JPEG", quality=92)
+
+    generation = {"temperature": 0}
+    if "2.5-flash" in model:
+        generation["thinkingConfig"] = {"thinkingBudget": 0}  # faster, plain transcription
+    payload = {
+        "contents": [{
+            "parts": [
+                {"inline_data": {
+                    "mime_type": "image/jpeg",
+                    "data": base64.b64encode(buffer.getvalue()).decode("ascii"),
+                }},
+                {"text": GEMINI_PROMPT},
+            ]
+        }],
+        "generationConfig": generation,
+    }
+    response = requests.post(
+        GEMINI_URL.format(model=model),
+        headers={"x-goog-api-key": key},
+        json=payload,
+        timeout=GEMINI_TIMEOUT_SECONDS,
+    )
+    if response.status_code != 200:
+        detail = ""
+        try:
+            detail = response.json().get("error", {}).get("message", "")
+        except ValueError:
+            detail = response.text[:200]
+        raise RuntimeError(f"Gemini returned {response.status_code}: {detail}".strip())
+
+    data = response.json()
+    candidates = data.get("candidates") or []
+    if not candidates:
+        reason = (data.get("promptFeedback") or {}).get("blockReason", "no answer")
+        raise RuntimeError(f"Gemini returned no transcription ({reason}).")
+    parts = (candidates[0].get("content") or {}).get("parts") or []
+    text = "\n".join(part.get("text", "") for part in parts).strip()
+    text = re.sub(r"^```[a-z]*\s*|\s*```$", "", text)
+    return "" if text.strip().upper() == "NONE" else text
+
+
 def _image_text(image, confidences=None):
-    """Read one page with Google Vision when configured, else local Tesseract."""
+    """Read one page with Gemini, else Google Vision, else local Tesseract.
+
+    A failed cloud call (no network, quota or rate limit) falls through to the
+    next reader, so the scanner keeps working on the local OCR.
+    """
+    if _gemini_key():
+        try:
+            return _gemini_text(image), "gemini"
+        except Exception as error:
+            print(f"Gemini reading failed, falling back: {error}")
     if _google_vision_key():
         try:
             return _google_vision_text(image, confidences), "google-vision"
@@ -962,7 +1042,7 @@ def parse_prescription_medicines(file_storage):
 
     if suffix not in IMAGE_SUFFIXES and suffix != PDF_SUFFIX:
         return _failure(display_name, "Unsupported file type. Upload a PNG, JPG, or PDF prescription.")
-    if suffix == PDF_SUFFIX and not _tesseract_command() and not _google_vision_key():
+    if suffix == PDF_SUFFIX and not _tesseract_command() and not _google_vision_key() and not _gemini_key():
         return _failure(display_name, "No OCR engine is configured on the server.")
 
     stored_path = UPLOAD_DIR / f"{uuid.uuid4().hex}{suffix}"

@@ -293,7 +293,7 @@ class PrescriptionOcrTests(unittest.TestCase):
 
     def test_google_vision_reads_when_key_is_set(self):
         image = Image.new("RGB", (600, 200), "white")
-        with patch.dict(os.environ, {"GOOGLE_VISION_API_KEY": "test-key"}), patch.object(
+        with patch.dict(os.environ, {"GOOGLE_VISION_API_KEY": "test-key", "GEMINI_API_KEY": ""}), patch.object(
             ocr_service, "_google_vision_text", return_value="Dolo 650 Tablet 1-0-1"
         ) as vision:
             text, provider = ocr_service._image_text(image)
@@ -325,7 +325,7 @@ class PrescriptionOcrTests(unittest.TestCase):
 
     def test_falls_back_to_tesseract_when_google_vision_fails(self):
         image = Image.new("RGB", (600, 200), "white")
-        with patch.dict(os.environ, {"GOOGLE_VISION_API_KEY": "test-key"}), patch.object(
+        with patch.dict(os.environ, {"GOOGLE_VISION_API_KEY": "test-key", "GEMINI_API_KEY": ""}), patch.object(
             ocr_service, "_google_vision_text", side_effect=RuntimeError("quota")
         ), patch.object(ocr_service, "_ocr_image", return_value="Local text"):
             text, provider = ocr_service._image_text(image)
@@ -410,6 +410,49 @@ class PrescriptionOcrTests(unittest.TestCase):
         scan = Image.new("RGB", (1800, 1200), "white")
         prepared = ocr_service.preprocess_prescription_image(scan)
         self.assertEqual(prepared.size, (1800, 1200))
+
+    def _gemini_response(self, status, body):
+        return type("Response", (), {
+            "status_code": status,
+            "text": "",
+            "json": lambda self: body,
+        })()
+
+    def test_gemini_reads_first_and_sends_key_in_header(self):
+        image = Image.new("RGB", (600, 200), "white")
+        body = {"candidates": [{"content": {"parts": [{"text": "Tab Dolo 650 mg 1-0-1"}]}}]}
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "gem-key", "GOOGLE_VISION_API_KEY": "v-key"}), \
+                patch.object(ocr_service.requests, "post", return_value=self._gemini_response(200, body)) as post, \
+                patch.object(ocr_service, "_google_vision_text") as vision:
+            text, provider = ocr_service._image_text(image)
+
+        self.assertEqual((text, provider), ("Tab Dolo 650 mg 1-0-1", "gemini"))
+        vision.assert_not_called()
+        args, kwargs = post.call_args
+        self.assertIn("generativelanguage.googleapis.com", args[0])
+        self.assertNotIn("gem-key", args[0])
+        self.assertEqual(kwargs["headers"], {"x-goog-api-key": "gem-key"})
+        parts = kwargs["json"]["contents"][0]["parts"]
+        self.assertEqual(parts[0]["inline_data"]["mime_type"], "image/jpeg")
+        self.assertTrue(parts[0]["inline_data"]["data"])
+
+    def test_gemini_rate_limit_falls_back_to_local_ocr(self):
+        image = Image.new("RGB", (600, 200), "white")
+        limited = self._gemini_response(429, {"error": {"message": "Resource exhausted"}})
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "gem-key"}), \
+                patch.dict(os.environ, {"GOOGLE_VISION_API_KEY": ""}), \
+                patch.object(ocr_service.requests, "post", return_value=limited), \
+                patch.object(ocr_service, "_ocr_image", return_value="Local text"):
+            text, provider = ocr_service._image_text(image)
+
+        self.assertEqual((text, provider), ("Local text", "tesseract"))
+
+    def test_gemini_none_answer_means_no_text(self):
+        image = Image.new("RGB", (600, 200), "white")
+        body = {"candidates": [{"content": {"parts": [{"text": "NONE"}]}}]}
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "gem-key"}), \
+                patch.object(ocr_service.requests, "post", return_value=self._gemini_response(200, body)):
+            self.assertEqual(ocr_service._gemini_text(image), "")
 
     def test_unsupported_file_type_is_rejected(self):
         result = ocr_service.parse_prescription_medicines(self._dummy_upload("notes.txt"))

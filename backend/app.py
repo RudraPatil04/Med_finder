@@ -74,6 +74,7 @@ def scanner_page():
     return render_template(
         "scan_medicine.html",
         cloud_ocr=bool(os.environ.get("GOOGLE_VISION_API_KEY", "").strip()),
+        gemini_ocr=bool(os.environ.get("GEMINI_API_KEY", "").strip()),
     )
 
 

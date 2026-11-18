@@ -1131,3 +1131,14 @@ were in the image sent and in matching garbled words. Changes in `backend/ocr_se
 
 Not done: a vision-LLM reader (Claude/Gemini returning JSON of medicine/strength/dose) would read
 messy handwriting better than OCR; it needs a new API key, so it is left as an option.
+
+## Update — Gemini reads prescriptions (2026-11-18)
+
+The owner's Google Cloud account needs a prepayment, so Vision is unavailable. `_image_text()` now
+tries **Gemini** first when `GEMINI_API_KEY` is set (free Google AI Studio key, sent in the
+`x-goog-api-key` header, never in the URL or repo; model `gemini-2.5-flash`, override with
+`GEMINI_MODEL`). The preprocessed image is sent with a prompt asking for one medicine line per
+line, as written, with no added medicines or substitutes; `NONE` means no medicines. Any failure
+(network, 429 rate limit, quota) falls back to Google Vision if its key is set, then Tesseract.
+The returned text goes through the same cleanup, fuzzy suggestions and confirm step; Gemini gives
+no per-word confidence, so `ocr_confidence` is null for it. 3 new tests (33 OCR tests).
