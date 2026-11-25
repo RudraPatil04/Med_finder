@@ -34,7 +34,7 @@ caveats. This file is the current state; read AGENTS.md when you need the *why* 
    same ingredient set/strength/form/release carrying `price > 0` and a pack size.
 6. **No invented content.** No ratings, testimonials, confidence scores or "savings" that are
    not computed from stored prices. (A previous pass removed all of those — do not reintroduce.)
-7. **Secrets come from the environment**: `DRUGSETU_API_KEY`, `GOOGLE_VISION_API_KEY`,
+7. **Secrets come from the environment**: `DRUGSETU_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_VISION_API_KEY`,
    `DRUGDB_API_KEY`. Never commit a key.
 8. **Do not rebuild the database casually.** `etl/build_database.py` drops `medicines`,
    `medicine_ingredients` and `api_search_cache`. `etl/repair_ingredient_prefixes.py` must be
@@ -64,7 +64,7 @@ Supporting services: `price_comparison_service.py` (per-unit normalization, pack
 `price_enrichment_service.py` (persist a PharmEasy listing price for a price-less row),
 `drug_catalog_service.py` (DrugDB v1 + PharmEasy mapping, dedupe, `ensure_catalog_schema`),
 `drugsetu_service.py` + `enrichment_worker.py` (background fill of composition/pack/MRP),
-`api_cache.py` (`api_search_cache` keys + TTLs), `backend/ocr_service.py` (Tesseract + optional
+`api_cache.py` (`api_search_cache` keys + TTLs), `backend/ocr_service.py` (Gemini, then Google Vision, then Tesseract;
 Google Vision, conservative local matching).
 
 ## Data model
@@ -110,7 +110,7 @@ Optional tools (all safe to skip): `etl/backfill_compositions.py` (resumable, ne
 source CSV), `etl/import_jan_aushadhi.py --pdf … --edition 2025 --edition-date …`,
 `etl/repair_ingredient_prefixes.py [--apply]` (dry run by default).
 
-Tests (unittest, offline, 80 focused tests):
+Tests (unittest, offline, 83 focused tests):
 `test_search_suggestions`, `test_api_fallback_cache`, `test_prescription_ocr`,
 `test_drug_catalog_client`, `test_backfill_compositions`, `test_repair_ingredient_prefixes`,
 `test_drugsetu_enrichment`. `test_api_fallback.py` and `test_clean.py` contain 0 test cases.

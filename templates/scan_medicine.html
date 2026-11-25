@@ -40,7 +40,7 @@
             <h2><span class="icon icon-sparkles"></span> How it works</h2>
             <ol>
                 <li><span>1</span>Upload a clear photo or text PDF of your prescription.</li>
-                <li><span>2</span>{% if cloud_ocr %}The image is sent to Google Cloud Vision for reading; the uploaded file is deleted from this server right after.{% else %}OCR reads the printed text on this machine; the file is deleted right after.{% endif %}</li>
+                <li><span>2</span>{% if gemini_ocr %}The image is sent to Google Gemini to read the handwriting (local OCR is used if that fails); the uploaded file is deleted from this server right after.{% elif cloud_ocr %}The image is sent to Google Cloud Vision for reading; the uploaded file is deleted from this server right after.{% else %}OCR reads the printed text on this machine; the file is deleted right after.{% endif %}</li>
                 <li><span>3</span>Printed names and strengths are matched against your MED FINDER database.</li>
                 <li><span>4</span>You confirm each match, change or remove wrong ones, and open the medicine record.</li>
             </ol>

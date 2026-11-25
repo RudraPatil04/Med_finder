@@ -591,6 +591,7 @@
         const ocrText = document.getElementById("ocrText");
         const ocrProvider = document.getElementById("ocrProvider");
         const ocrProviderLabels = {
+            "gemini": "Google Gemini",
             "google-vision": "Google Vision",
             "tesseract": "Tesseract",
             "pdf-text-layer": "PDF text layer"
