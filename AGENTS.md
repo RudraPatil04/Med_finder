@@ -1142,3 +1142,17 @@ line, as written, with no added medicines or substitutes; `NONE` means no medici
 (network, 429 rate limit, quota) falls back to Google Vision if its key is set, then Tesseract.
 The returned text goes through the same cleanup, fuzzy suggestions and confirm step; Gemini gives
 no per-word confidence, so `ocr_confidence` is null for it. 3 new tests (33 OCR tests).
+
+## Update — Gemini actually used again (2026-11-25)
+
+The owner's scanner kept reading with Tesseract. Two causes: (1) the Gemini commit (`dbee16c`) only
+lived on `claude/project-thread-f86dlf`, never on `feat/search-no-price-notice`, which the owner
+runs; it is now merged onto `claude/project-thread-xx4toi` (asset versions `20261125-1`).
+(2) Google retired `gemini-2.5-flash` for new keys (HTTP 404 "no longer available to new users"),
+so every call failed and fell through. `_gemini_text()` now tries `GEMINI_MODEL` (if set), then
+`gemini-flash-latest`, `gemini-3.5-flash`, `gemini-flash-lite-latest`; 404/429/5xx/timeout moves to
+the next model, other errors (bad key, 400) stop. The free tier answered 503 "high demand" for
+`gemini-flash-latest` during testing, and `gemini-3.5-flash` took ~35 s per page. The server logs
+which models were skipped and why, and says when `GEMINI_API_KEY` is missing from its environment.
+The key is a Windows *user* variable, so a terminal opened before it was set does not see it.
+2 new tests (100 offline tests pass).

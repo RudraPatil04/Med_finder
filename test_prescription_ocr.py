@@ -483,6 +483,32 @@ class PrescriptionOcrTests(unittest.TestCase):
 
         self.assertEqual((text, provider), ("Local text", "tesseract"))
 
+    def test_gemini_retired_or_busy_model_moves_to_next_model(self):
+        image = Image.new("RGB", (600, 200), "white")
+        answers = [
+            self._gemini_response(404, {"error": {"message": "no longer available"}}),
+            self._gemini_response(503, {"error": {"message": "high demand"}}),
+            self._gemini_response(200, {"candidates": [{"content": {"parts": [{"text": "Tab Pan 40"}]}}]}),
+        ]
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "gem-key", "GEMINI_MODEL": "old-model"}), \
+                patch.object(ocr_service.requests, "post", side_effect=answers) as post:
+            text, provider = ocr_service._image_text(image)
+
+        self.assertEqual((text, provider), ("Tab Pan 40", "gemini"))
+        urls = [call.args[0] for call in post.call_args_list]
+        self.assertIn("/models/old-model:", urls[0])
+        self.assertIn(f"/models/{ocr_service.GEMINI_DEFAULT_MODELS[0]}:", urls[1])
+        self.assertIn(f"/models/{ocr_service.GEMINI_DEFAULT_MODELS[1]}:", urls[2])
+
+    def test_gemini_bad_key_does_not_try_other_models(self):
+        image = Image.new("RGB", (600, 200), "white")
+        denied = self._gemini_response(400, {"error": {"message": "API key not valid"}})
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "gem-key", "GEMINI_MODEL": ""}), \
+                patch.object(ocr_service.requests, "post", return_value=denied) as post:
+            with self.assertRaises(RuntimeError):
+                ocr_service._gemini_text(image)
+        self.assertEqual(post.call_count, 1)
+
     def test_gemini_none_answer_means_no_text(self):
         image = Image.new("RGB", (600, 200), "white")
         body = {"candidates": [{"content": {"parts": [{"text": "NONE"}]}}]}

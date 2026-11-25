@@ -42,7 +42,12 @@ GOOGLE_VISION_MAX_SIDE = 2400
 # Gemini (Google AI Studio, free tier) reads handwriting far better than OCR.
 # The key comes from GEMINI_API_KEY and is never stored in the repository.
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-GEMINI_DEFAULT_MODEL = "gemini-2.5-flash"
+# Tried in order (after GEMINI_MODEL, if set). Google retires model names for new
+# keys (gemini-2.5-flash answered 404 in Nov 2026) and the free tier often answers
+# 503 "high demand", so a retired, overloaded or rate-limited model moves on to
+# the next one instead of dropping straight to Tesseract.
+GEMINI_DEFAULT_MODELS = ("gemini-flash-latest", "gemini-3.5-flash", "gemini-flash-lite-latest")
+GEMINI_RETRY_NEXT_MODEL = {404, 429, 500, 503}
 GEMINI_TIMEOUT_SECONDS = 45
 GEMINI_PROMPT = (
     "This is a photo of a doctor's prescription, possibly handwritten. "
@@ -337,49 +342,71 @@ def _gemini_key():
     return os.environ.get("GEMINI_API_KEY", "").strip()
 
 
+def _gemini_models():
+    """GEMINI_MODEL first (if set), then the defaults, without repeats."""
+    preferred = os.environ.get("GEMINI_MODEL", "").strip()
+    models = [preferred] if preferred else []
+    models += [model for model in GEMINI_DEFAULT_MODELS if model != preferred]
+    return models
+
+
 def _gemini_text(image):
-    """Read one page with Gemini and return its line-by-line transcription."""
+    """Read one page with Gemini and return its line-by-line transcription.
+
+    Each model in _gemini_models() is tried until one answers; a retired (404),
+    rate-limited (429) or overloaded (5xx) model, or a timeout, moves on to the
+    next. The error raised when all fail names every model and its reason.
+    """
     import base64
 
     key = _gemini_key()
     if not key:
         raise RuntimeError("GEMINI_API_KEY is not set.")
-    model = os.environ.get("GEMINI_MODEL", "").strip() or GEMINI_DEFAULT_MODEL
 
     prepared = preprocess_prescription_image(image)
     buffer = io.BytesIO()
     prepared.save(buffer, "JPEG", quality=92)
+    image_part = {"inline_data": {
+        "mime_type": "image/jpeg",
+        "data": base64.b64encode(buffer.getvalue()).decode("ascii"),
+    }}
 
-    generation = {"temperature": 0}
-    if "2.5-flash" in model:
-        generation["thinkingConfig"] = {"thinkingBudget": 0}  # faster, plain transcription
-    payload = {
-        "contents": [{
-            "parts": [
-                {"inline_data": {
-                    "mime_type": "image/jpeg",
-                    "data": base64.b64encode(buffer.getvalue()).decode("ascii"),
-                }},
-                {"text": GEMINI_PROMPT},
-            ]
-        }],
-        "generationConfig": generation,
-    }
-    response = requests.post(
-        GEMINI_URL.format(model=model),
-        headers={"x-goog-api-key": key},
-        json=payload,
-        timeout=GEMINI_TIMEOUT_SECONDS,
-    )
-    if response.status_code != 200:
+    failures = []
+    data = None
+    for model in _gemini_models():
+        generation = {"temperature": 0}
+        if "2.5-flash" in model:
+            generation["thinkingConfig"] = {"thinkingBudget": 0}  # faster, plain transcription
+        payload = {
+            "contents": [{"parts": [image_part, {"text": GEMINI_PROMPT}]}],
+            "generationConfig": generation,
+        }
+        try:
+            response = requests.post(
+                GEMINI_URL.format(model=model),
+                headers={"x-goog-api-key": key},
+                json=payload,
+                timeout=GEMINI_TIMEOUT_SECONDS,
+            )
+        except requests.Timeout:
+            failures.append(f"{model}: timed out")
+            continue
+        if response.status_code == 200:
+            data = response.json()
+            break
         detail = ""
         try:
             detail = response.json().get("error", {}).get("message", "")
         except ValueError:
             detail = response.text[:200]
-        raise RuntimeError(f"Gemini returned {response.status_code}: {detail}".strip())
+        failures.append(f"{model}: {response.status_code} {detail[:120]}".strip())
+        if response.status_code not in GEMINI_RETRY_NEXT_MODEL:
+            break  # bad key or bad request: another model will not help
+    if data is None:
+        raise RuntimeError("Gemini returned no answer (" + "; ".join(failures) + ")")
+    if failures:
+        print("Gemini: skipped " + "; ".join(failures))
 
-    data = response.json()
     candidates = data.get("candidates") or []
     if not candidates:
         reason = (data.get("promptFeedback") or {}).get("blockReason", "no answer")
@@ -401,6 +428,8 @@ def _image_text(image, confidences=None):
             return _gemini_text(image), "gemini"
         except Exception as error:
             print(f"Gemini reading failed, falling back: {error}")
+    else:
+        print("Gemini skipped: GEMINI_API_KEY is not set in this server's environment.")
     if _google_vision_key():
         try:
             return _google_vision_text(image, confidences), "google-vision"
