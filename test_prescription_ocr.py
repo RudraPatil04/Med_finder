@@ -562,6 +562,103 @@ class PrescriptionOcrTests(unittest.TestCase):
                 patch.object(ocr_service.requests, "post", return_value=self._gemini_response(200, body)):
             self.assertEqual(ocr_service._gemini_text(image), "")
 
+    def test_extra_gemini_key_takes_over_when_quota_runs_out(self):
+        image = Image.new("RGB", (600, 200), "white")
+        limited = self._gemini_response(429, {"error": {"message": "quota"}})
+        answer = self._gemini_response(200, {"candidates": [{"content": {"parts": [{"text": "Tab Pan 40"}]}}]})
+        models = len(ocr_service._gemini_models())
+        env = {"GEMINI_API_KEY": "first-key", "GEMINI_API_KEY_2": "second-key", "GEMINI_MODEL": ""}
+        with patch.dict(os.environ, env), \
+                patch.dict(ocr_service._gemini_rest_until, {}, clear=True), \
+                patch.object(ocr_service.requests, "post", side_effect=[limited] * models + [answer]) as post, \
+                patch("builtins.print") as printed:
+            self.assertEqual(ocr_service._gemini_text(image), "Tab Pan 40")
+            rested = dict(ocr_service._gemini_rest_until)
+
+        self.assertEqual(post.call_args.kwargs["headers"], {"x-goog-api-key": "second-key"})
+        self.assertIn("GEMINI_API_KEY", rested)  # the used-up key rests and is tried last
+        log = " ".join(str(call.args) for call in printed.call_args_list)
+        self.assertIn("switching to GEMINI_API_KEY_2", log)
+        self.assertNotIn("first-key", log)
+        self.assertNotIn("second-key", log)
+
+    def test_gemini_json_answer_gives_lines_and_generic_hints(self):
+        image = Image.new("RGB", (600, 200), "white")
+        answer = ('[{"line": "Tab Calpex 500 mg 1-0-1", "form": "tablet", '
+                  '"generic": "Paracetamol (500mg)"}]')
+        body = {"candidates": [{"content": {"parts": [{"text": answer}]}}]}
+        ocr_service._gemini_hints.value = {}
+        try:
+            with patch.dict(os.environ, {"GEMINI_API_KEY": "gem-key"}), \
+                    patch.object(ocr_service.requests, "post", return_value=self._gemini_response(200, body)):
+                text = ocr_service._gemini_text(image)
+            hints = ocr_service._gemini_hints.value
+        finally:
+            ocr_service._gemini_hints.value = None
+
+        self.assertEqual(text, "Tab Calpex 500 mg 1-0-1")
+        self.assertEqual(hints[ocr_service._gemini_hint_key(text)]["generic"], "Paracetamol (500mg)")
+
+    def test_brand_missing_from_catalog_lists_same_composition_as_unverified(self):
+        line = "Tab Calpex 500 mg 1-0-1"
+        hints = {ocr_service._gemini_hint_key(line): {"form": "tablet", "generic": "Paracetamol (500mg)"}}
+        with patch.dict(os.environ, {"MEDFINDER_SCAN_LIVE_CATALOG": "0"}):
+            medicines, unmatched = ocr_service._extract_medicines(line + "\n", None, hints)
+
+        self.assertEqual(medicines, [])
+        self.assertEqual(len(unmatched), 1)
+        entry = unmatched[0]
+        self.assertEqual([item["name"] for item in entry["suggestions"]], ["Paracetamol 500mg Tablet"])
+        self.assertEqual(entry["generic_source"], "gemini")
+        self.assertIn("not verified", entry["note"])
+        self.assertIn("pharmacist", entry["note"])
+
+    def test_printed_generic_matches_by_recorded_composition(self):
+        line = "Tab Amoxicillin 500 mg + Clavulanic Acid 125 mg 1-0-1"
+        hints = {ocr_service._gemini_hint_key(line): {
+            "form": "tablet", "generic": "Amoxicillin (500mg) + Clavulanic Acid (125mg)"}}
+        with patch.dict(os.environ, {"MEDFINDER_SCAN_LIVE_CATALOG": "0"}):
+            medicines, _ = ocr_service._extract_medicines(line + "\n", None, hints)
+
+        self.assertEqual([item["name"] for item in medicines], ["Augmentin 625 Duo Tablet"])
+        self.assertEqual(medicines[0]["matched_via"], "generic")
+        self.assertNotEqual(medicines[0]["match_type"], "exact")
+
+    def test_live_lookup_asks_only_for_the_printed_brand(self):
+        line = "Tab Vonalong 20 od for seven days"
+        hints = {ocr_service._gemini_hint_key(line): {"form": "tablet", "generic": ""}}
+        asked = []
+
+        def fake_lookup(query, accept):
+            asked.append(query)
+            if query != "Vonalong" or not accept({"medicine_name": "Vonalong 20mg Tablet"}):
+                return 0
+            connection = sqlite3.connect(self.db_path)
+            try:
+                connection.execute(
+                    "INSERT INTO medicines(medicine_name, brand_name, strength, dosage_form, composition, "
+                    "composition_complete, source) VALUES ('Vonalong 20mg Tablet', 'Vonalong', '20mg', "
+                    "'Tablet', 'Vonoprazan (20mg)', 1, 'api')"
+                )
+                connection.commit()
+            finally:
+                connection.close()
+            return 1
+
+        with patch.dict(os.environ, {"MEDFINDER_SCAN_LIVE_CATALOG": "1"}), \
+                patch.object(ocr_service, "_live_catalog_add", side_effect=fake_lookup):
+            medicines, _ = ocr_service._extract_medicines(line + "\n", None, hints)
+
+        self.assertEqual(asked, ["Vonalong"])
+        self.assertEqual([item["name"] for item in medicines], ["Vonalong 20mg Tablet"])
+
+    def test_live_brand_filter_needs_the_whole_brand_word(self):
+        accept = ocr_service._brand_record_matches("Seven")
+        self.assertFalse(accept({"medicine_name": "Sevent 800mg Tablet", "brand_name": "Sevent"}))
+        accept = ocr_service._brand_record_matches("Ultracal-D")
+        self.assertTrue(accept({"medicine_name": "Ultracal-D Tablet"}))
+        self.assertFalse(accept({"medicine_name": "Ultracal Tablet"}))
+
     def test_unsupported_file_type_is_rejected(self):
         result = ocr_service.parse_prescription_medicines(self._dummy_upload("notes.txt"))
 

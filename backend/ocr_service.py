@@ -11,9 +11,11 @@ catalog, and never invents results when OCR fails.
 """
 
 import io
+import json
 import os
 import re
 import shutil
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -49,14 +51,29 @@ GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:ge
 GEMINI_DEFAULT_MODELS = ("gemini-flash-latest", "gemini-3.5-flash", "gemini-flash-lite-latest")
 GEMINI_RETRY_NEXT_MODEL = {404, 429, 500, 503}
 GEMINI_TIMEOUT_SECONDS = 45
+# Extra free AI Studio keys (each from its own Google Cloud project) can be set as
+# GEMINI_API_KEY_2 ... GEMINI_API_KEY_9. When a key's free quota runs out (429 on
+# every model) it rests for GEMINI_KEY_COOLDOWN_SECONDS and the next key is used.
+# Keys are only ever named by their variable, never printed.
+GEMINI_KEY_VARIABLES = ("GEMINI_API_KEY",) + tuple(f"GEMINI_API_KEY_{n}" for n in range(2, 10))
+GEMINI_KEY_COOLDOWN_SECONDS = 3600
+# Statuses that mean "this key" (not this model) cannot be used right now.
+GEMINI_KEY_REJECTED = {400, 401, 403}
 GEMINI_PROMPT = (
     "This is a photo of a doctor's prescription, possibly handwritten. "
-    "Transcribe every medicine line exactly as written, one medicine per line, in the form: "
-    "<form> <medicine name> <strength> <dosage schedule> <duration>, for example "
-    "'Tab Dolo 650 mg 1-0-1 x 5 days'. Keep the brand name as written; when a letter is "
-    "unclear, write your best reading of the word. Do not add medicines that are not on the "
-    "page, do not suggest substitutes, and skip the doctor, clinic, patient and address lines. "
-    "Output plain text only, no numbering, no markdown. If no medicine is written, output NONE."
+    "List every medicine line written on it, in the order written, including lines that are "
+    "ticked or partly unclear. Return a JSON array; each item is an object with these keys: "
+    "\"line\": the line transcribed as written, in the form <form> <medicine name> <strength> "
+    "<dosage schedule> <duration>, for example 'Tab Dolo 650 mg 1-0-1 x 5 days'. Keep the "
+    "brand name as written; when a letter is unclear, write your best reading of the word. "
+    "\"form\": one of tablet, capsule, syrup, injection, drops, sachet, cream, inhaler, or \"\" "
+    "when the form cannot be told. "
+    "\"generic\": the active ingredients of that product with their strengths, written like "
+    "'Paracetamol (650mg)' or 'Amoxycillin (500mg) + Clavulanic Acid (125mg)', using Indian "
+    "generic names; give it only when you are sure what that product contains, otherwise \"\". "
+    "Do not add medicines that are not on the page, do not suggest substitutes, and skip the "
+    "doctor, clinic, patient, advice, test and address lines. If no medicine is written, "
+    "return []."
 )
 # Phone photos are usually larger than this; small scans are upscaled so thin
 # handwriting strokes stay several pixels wide.
@@ -94,7 +111,8 @@ _NAME_TOKEN = re.compile(r"\b[A-Za-z][A-Za-z0-9-]{2,}\b")
 _FORM_HINTS = (
     (re.compile(r"\b(?:tab|tabs|tablet|tablets)\b|(?:^|\s)T\.\s", re.I), "tablet"),
     (re.compile(r"\b(?:cap|caps|capsule|capsules)\b|(?:^|\s)C\.\s", re.I), "capsule"),
-    (re.compile(r"\b(?:syr|syp|syrup|susp|suspension)\b", re.I), "syrup"),
+    # "2 tsf" (teaspoonful) is only ever a liquid dose.
+    (re.compile(r"\b(?:syr|syp|syrup|susp|suspension|tsf|tsp|teaspoons?)\b|(?<=\d)\s*tsf\b", re.I), "syrup"),
     (re.compile(r"\b(?:inj|injection|infusion)\b", re.I), "injection"),
     (re.compile(r"\b(?:drop|drops)\b", re.I), "drops"),
 )
@@ -353,8 +371,24 @@ def _google_vision_text(image, confidences=None):
     return (result.get("fullTextAnnotation") or {}).get("text", "")
 
 
+_gemini_rest_until = {}  # key variable name -> time.monotonic() when it may be used again
+_gemini_hints = threading.local()
+
+
+def _gemini_keys():
+    """(variable name, key) for every Gemini key set, rested keys last."""
+    keys = []
+    for name in GEMINI_KEY_VARIABLES:
+        value = os.environ.get(name, "").strip()
+        if value and value not in (key for _name, key in keys):
+            keys.append((name, value))
+    now = time.monotonic()
+    return sorted(keys, key=lambda item: _gemini_rest_until.get(item[0], 0) > now)
+
+
 def _gemini_key():
-    return os.environ.get("GEMINI_API_KEY", "").strip()
+    keys = _gemini_keys()
+    return keys[0][1] if keys else ""
 
 
 def _gemini_models():
@@ -365,31 +399,54 @@ def _gemini_models():
     return models
 
 
-def _gemini_text(image):
-    """Read one page with Gemini and return its line-by-line transcription.
+def _gemini_hint_key(line):
+    return normalize_measure(_clean_line(line))
 
-    Each model in _gemini_models() is tried until one answers; a retired (404),
-    rate-limited (429) or overloaded (5xx) model, or a timeout, moves on to the
-    next. The error raised when all fail names every model and its reason.
-    """
-    import base64
 
-    key = _gemini_key()
-    if not key:
-        raise RuntimeError("GEMINI_API_KEY is not set.")
+def _remember_gemini_hints(items):
+    """Keep Gemini's form and generic name for each line it returned."""
+    hints = getattr(_gemini_hints, "value", None)
+    if hints is None:
+        return
+    for item in items:
+        line = item["line"]
+        hints[_gemini_hint_key(line)] = {
+            "form": item.get("form") or "",
+            "generic": item.get("generic") or "",
+        }
 
-    prepared = preprocess_prescription_image(image)
-    buffer = io.BytesIO()
-    prepared.save(buffer, "JPEG", quality=92)
-    image_part = {"inline_data": {
-        "mime_type": "image/jpeg",
-        "data": base64.b64encode(buffer.getvalue()).decode("ascii"),
-    }}
 
+def _gemini_lines(text):
+    """Turn Gemini's JSON answer into (lines, items); plain text stays as is."""
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return text, []
+    if isinstance(data, dict):
+        data = data.get("medicines") or data.get("items") or []
+    if not isinstance(data, list):
+        return text, []
+    items = []
+    for entry in data:
+        if isinstance(entry, str):
+            entry = {"line": entry}
+        if not isinstance(entry, dict):
+            continue
+        line = " ".join(str(entry.get("line") or "").split())
+        if not line:
+            continue
+        form = str(entry.get("form") or "").strip().casefold()
+        generic = " ".join(str(entry.get("generic") or "").split())
+        items.append({"line": line, "form": form, "generic": generic})
+    return "\n".join(item["line"] for item in items), items
+
+
+def _gemini_call(key, image_part):
+    """Try each model with one key. Returns (data, failures, quota_hit, key_rejected)."""
     failures = []
-    data = None
+    quota_hit = False
     for model in _gemini_models():
-        generation = {"temperature": 0}
+        generation = {"temperature": 0, "responseMimeType": "application/json"}
         if "2.5-flash" in model:
             generation["thinkingConfig"] = {"thinkingBudget": 0}  # faster, plain transcription
         payload = {
@@ -407,16 +464,61 @@ def _gemini_text(image):
             failures.append(f"{model}: timed out")
             continue
         if response.status_code == 200:
-            data = response.json()
-            break
+            return response.json(), failures, quota_hit, False
         detail = ""
         try:
             detail = response.json().get("error", {}).get("message", "")
         except ValueError:
             detail = response.text[:200]
         failures.append(f"{model}: {response.status_code} {detail[:120]}".strip())
+        if response.status_code == 429:
+            quota_hit = True
         if response.status_code not in GEMINI_RETRY_NEXT_MODEL:
-            break  # bad key or bad request: another model will not help
+            # Bad key or bad request: another model will not help.
+            return None, failures, quota_hit, response.status_code in GEMINI_KEY_REJECTED
+    return None, failures, quota_hit, False
+
+
+def _gemini_text(image):
+    """Read one page with Gemini and return its line-by-line transcription.
+
+    Each key in _gemini_keys() is tried in turn. With one key, each model in
+    _gemini_models() is tried until one answers; a retired (404), rate-limited
+    (429) or overloaded (5xx) model, or a timeout, moves on to the next. A key
+    whose quota is used up on every model, or that Google rejects, hands over to
+    the next key. The error raised when all fail names every model and reason.
+    """
+    import base64
+
+    keys = _gemini_keys()
+    if not keys:
+        raise RuntimeError("GEMINI_API_KEY is not set.")
+
+    prepared = preprocess_prescription_image(image)
+    buffer = io.BytesIO()
+    prepared.save(buffer, "JPEG", quality=92)
+    image_part = {"inline_data": {
+        "mime_type": "image/jpeg",
+        "data": base64.b64encode(buffer.getvalue()).decode("ascii"),
+    }}
+
+    failures = []
+    data = None
+    for position, (name, key) in enumerate(keys):
+        data, key_failures, quota_hit, rejected = _gemini_call(key, image_part)
+        prefix = f"{name}: " if len(keys) > 1 else ""
+        failures += [prefix + failure for failure in key_failures]
+        if data is not None:
+            _gemini_rest_until.pop(name, None)
+            break
+        if not (quota_hit or rejected):
+            break  # busy or timed out: another key reaches the same busy servers
+        if quota_hit:
+            _gemini_rest_until[name] = time.monotonic() + GEMINI_KEY_COOLDOWN_SECONDS
+        reason = "used up its free quota" if quota_hit else "was rejected by Google"
+        following = keys[position + 1][0] if position + 1 < len(keys) else None
+        print(f"Gemini: {name} {reason}; "
+              + (f"switching to {following}." if following else "no other Gemini key is set."))
     if data is None:
         raise RuntimeError("Gemini returned no answer (" + "; ".join(failures) + ")")
     if failures:
@@ -428,8 +530,12 @@ def _gemini_text(image):
         raise RuntimeError(f"Gemini returned no transcription ({reason}).")
     parts = (candidates[0].get("content") or {}).get("parts") or []
     text = "\n".join(part.get("text", "") for part in parts).strip()
-    text = re.sub(r"^```[a-z]*\s*|\s*```$", "", text)
-    return "" if text.strip().upper() == "NONE" else text
+    text = re.sub(r"^```[a-z]*\s*|\s*```$", "", text).strip()
+    if text.upper() == "NONE":
+        return ""
+    text, items = _gemini_lines(text)
+    _remember_gemini_hints(items)
+    return text
 
 
 def _image_text(image, confidences=None):
@@ -1039,6 +1145,12 @@ def _known_abbreviation_entry(token, line, line_confidence):
         )
     except Exception:
         rows = []
+    others = []
+    if token.casefold() == "ors":
+        # Catalog ORS products list their salts, not the words "oral rehydration".
+        found = _ors_products()
+        rows = list(rows) or found[:1]
+        others = [row for row in found if not rows or row["id"] != rows[0]["id"]][:SUGGEST_LIMIT - 1]
     for row in rows:
         return {
             "medicine_id": row["id"],
@@ -1055,7 +1167,10 @@ def _known_abbreviation_entry(token, line, line_confidence):
             "ocr_confidence": line_confidence,
             "dosage_text": _dosage_text(line),
             "source_line": line[:160],
-            "alternatives": [],
+            "matched_via": "composition",
+            "note": (f"{token.upper()} means {generic.lower()}; this catalog product lists those salts. "
+                     "Confirm the product with your pharmacist."),
+            "alternatives": [_product_entry(other, "composition") for other in others],
         }
     return {
         "text": line[:160],
@@ -1070,24 +1185,291 @@ def _known_abbreviation_entry(token, line, line_confidence):
     }
 
 
-def _extract_medicines(text, confidences=None):
+# ---- Generic names, live catalog and runner-up readings -------------------
+# Gemini also reports each product's active ingredients ("generic"). That is the
+# model's own knowledge, not catalog evidence, so it is only used to (a) match a
+# line that itself prints that generic name, or (b) list catalog products
+# recorded with that composition, labelled as an unverified AI reading.
+_GENERIC_PART = re.compile(r"^\s*(?P<name>[^()]+?)\s*(?:\((?P<strength>[^)]*)\))?\s*$")
+_GEMINI_FORMS = {
+    "tablet": "tablet", "capsule": "capsule", "syrup": "syrup", "suspension": "syrup",
+    "injection": "injection", "drops": "drops", "sachet": "sachet",
+}
+SCAN_LIVE_LOOKUPS = 4
+SCAN_LIVE_CACHE_PREFIX = "scan-live:"
+_ORS_SALTS = ("sodiumchloride", "potassiumchloride")
+
+
+_SALT_WORDS = re.compile(
+    r"(?:sulfate|sulphate|hydrochloride|hcl|hydrobromide|sodium|potassium|magnesium|calcium|"
+    r"maleate|mesylate|besylate|besilate|succinate|tartrate|citrate|phosphate|acetate|"
+    r"dihydrate|monohydrate|trihydrate|anhydrous|ip|bp|usp)",
+    re.I,
+)
+
+
+def _without_salt(parts):
+    """'Neomycin Sulfate' -> 'Neomycin': the catalog usually records the base name."""
+    stripped = []
+    for _norm, strength, name in parts:
+        base = " ".join(_SALT_WORDS.sub(" ", name).split())
+        if not base:
+            return []
+        stripped.append((normalize_measure(base), strength, base))
+    return stripped
+
+
+def _parse_generic(text):
+    """'Paracetamol (650mg) + Caffeine (50mg)' -> [(name_norm, strength_norm|None, name)]."""
+    parts = []
+    text = str(text or "").strip()
+    if not text:
+        return []
+    for component in re.split(r"\s*\+\s*", text):
+        match = _GENERIC_PART.match(component)
+        if not match:
+            return []
+        name = " ".join(match.group("name").split())
+        name_norm = normalize_measure(name)
+        if len(name_norm) < 4 or name_norm.isdigit():
+            return []
+        strength = normalize_measure(match.group("strength")) if match.group("strength") else None
+        parts.append((name_norm, strength or None, name))
+    return parts
+
+
+def _generic_label(parts):
+    return " + ".join(
+        name + (f" ({strength})" if strength else "") for _norm, strength, name in parts
+    )
+
+
+def _composition_products(parts, form_hint, exclude_ids=(), limit=SUGGEST_LIMIT):
+    """Catalog products recorded with exactly these ingredients (and strengths when given)."""
+    if not parts:
+        return []
+    clauses = []
+    params = []
+    for name_norm, strength, _name in parts:
+        clause = "SELECT medicine_id FROM medicine_ingredients WHERE ingredient_name_norm = ?"
+        params.append(name_norm)
+        if strength:
+            clause += " AND ingredient_strength_norm = ?"
+            params.append(strength)
+        clauses.append(clause)
+    params.append(len(parts))
+    try:
+        rows = execute_query(
+            "SELECT id, medicine_name, brand_name, strength, dosage_form, price, prescription_required "
+            "FROM medicines WHERE id IN (" + " INTERSECT ".join(clauses) + ") "
+            "AND (SELECT COUNT(*) FROM medicine_ingredients mi WHERE mi.medicine_id = medicines.id) = ? "
+            "LIMIT 300",
+            tuple(params),
+        )
+    except Exception as error:
+        print(f"OCR composition lookup failed: {error}")
+        return []
+    ranked = []
+    seen_names = set()
+    for row in rows:
+        name_key = str(row["medicine_name"] or "").casefold()
+        if row["id"] in exclude_ids or name_key in seen_names:
+            continue
+        seen_names.add(name_key)
+        form_ok = _form_ok(form_hint, row["dosage_form"])
+        ranked.append(((0 if form_ok else 1, 0 if row["price"] else 1, row["price"] or 0, name_key), row))
+    ranked.sort(key=lambda item: item[0])
+    return [row for _rank, row in ranked[:limit]]
+
+
+def _product_entry(row, kind, form_hint=None, target_strength=None, strength_number=None):
+    return {
+        "medicine_id": row["id"],
+        "name": row["medicine_name"],
+        "brand": row["brand_name"],
+        "strength": row["strength"],
+        "dosage_form": row["dosage_form"],
+        "price": row["price"],
+        "prescription_required": row["prescription_required"],
+        "matched_text": row["medicine_name"],
+        "kind": kind,
+        "score": None,
+        "strength_match": _strength_state(row, target_strength, strength_number)
+        if (target_strength or strength_number) else None,
+        "form_match": _form_ok(form_hint, row["dosage_form"]) if form_hint else None,
+    }
+
+
+def _live_lookups_allowed():
+    return os.environ.get("MEDFINDER_SCAN_LIVE_CATALOG", "1").strip() != "0"
+
+
+def _live_catalog_add(query, accept):
+    """Look a name up in the live India catalogs and save the records `accept` keeps.
+
+    Uses the same DrugDB/PharmEasy clients and save path as the search page, so
+    a saved product carries the listing's own name, form, strength, composition
+    and source. Misses are cached so the same name is not looked up every scan.
+    Returns the number of products saved.
+    """
+    from backend.services.api_cache import ensure_api_search_cache, has_recent_api_search, record_api_search
+    from backend.services.drug_catalog_service import (
+        save_catalog_medicine, search_catalog, search_pharmeasy_catalog,
+    )
+
+    cache_key = SCAN_LIVE_CACHE_PREFIX + normalize_measure(query)
+    try:
+        ensure_api_search_cache()
+        if has_recent_api_search(cache_key):
+            return 0
+    except Exception as error:
+        print(f"OCR live catalog cache unavailable: {error}")
+    saved = 0
+    for source in (search_catalog, search_pharmeasy_catalog):
+        try:
+            records = [record for record in source(query, limit=10) if accept(record)]
+        except Exception as error:
+            print(f"OCR live catalog lookup failed for '{query}': {error}")
+            records = []
+        for record in records:
+            if save_catalog_medicine(record):
+                saved += 1
+        if saved:
+            break
+    try:
+        record_api_search(cache_key, saved)
+    except Exception:
+        pass
+    if saved:
+        print(f"OCR: saved {saved} catalog products for '{query}' from the live catalog")
+    return saved
+
+
+def _brand_record_matches(token, last_word_prefix=False):
+    """Keep listings whose name starts with the printed brand as whole words.
+
+    "Vonalong" keeps "Vonalong 20mg Tablet"; "Seven" must not keep "Sevenox".
+    With last_word_prefix, the last printed word may be cut short by the
+    handwriting ("Pantakind Raf" keeps "Pantakind Raft Oral Suspension").
+    """
+    printed = _name_words(token)
+
+    def accept(record):
+        for name in (record.get("brand_name"), record.get("medicine_name")):
+            words = _name_words(name)[:len(printed)]
+            if not printed or len(words) < len(printed):
+                continue
+            if words == printed:
+                return True
+            if (last_word_prefix and len(printed) > 1 and words[:-1] == printed[:-1]
+                    and len(printed[-1]) >= 3 and words[-1].startswith(printed[-1])):
+                return True
+        return False
+    return accept
+
+
+def _brand_tokens(line, tokens):
+    """Name words printed before the first number: the brand, not the directions."""
+    head = re.split(r"\d", line, maxsplit=1)[0]
+    head_tokens = set(_name_tokens(head))
+    return [token for token in tokens if token in head_tokens][:2]
+
+
+def _composition_record_matches(parts):
+    from backend.medicine_data import parse_composition
+
+    def accept(record):
+        found = parse_composition(record.get("composition"))
+        if len(found) != len(parts):
+            return False
+        have = [(item["ingredient_name_norm"], item["ingredient_strength_norm"]) for item in found]
+        return all(
+            any(name == have_name and (not strength or strength == have_strength)
+                for have_name, have_strength in have)
+            for name, strength, _label in parts
+        )
+    return accept
+
+
+def _runner_ups(token, strength, form_hint, hint, chosen, limit=SUGGEST_LIMIT - 1):
+    """Other products under the same printed brand (other strengths or forms)."""
+    try:
+        rows = search_medicines(token, limit=25, enable_api_fallback=False)
+    except Exception:
+        return []
+    boundary = re.compile(rf"\b{re.escape(token)}\b", re.I)
+    target_strength = normalize_measure(strength) if strength else None
+    strength_number = _strength_number(strength) or hint
+    ranked = []
+    seen = {str(chosen["medicine_name"] or "").casefold()}
+    for row in rows:
+        name_key = str(row["medicine_name"] or "").casefold()
+        if row["id"] == chosen["id"] or name_key in seen:
+            continue
+        if not (boundary.search(str(row["medicine_name"] or ""))
+                or boundary.search(str(row["brand_name"] or ""))):
+            continue
+        seen.add(name_key)
+        state = _strength_state(row, target_strength, strength_number)
+        ranked.append(((0 if _form_ok(form_hint, row["dosage_form"]) else 1,
+                        0 if state is True else 1 if state is None else 2), row))
+    ranked.sort(key=lambda item: item[0])
+    return [_product_entry(row, "brand", form_hint, target_strength, strength_number)
+            for _rank, row in ranked[:limit]]
+
+
+def _ors_record_matches(record):
+    """A live listing is ORS when it lists both chlorides and dextrose or glucose."""
+    from backend.medicine_data import parse_composition
+
+    names = [item["ingredient_name_norm"] for item in parse_composition(record.get("composition"))]
+    return (all(salt in names for salt in _ORS_SALTS)
+            and any("dextrose" in name or "glucose" in name for name in names))
+
+
+def _ors_products(limit=SUGGEST_LIMIT):
+    """Catalog oral rehydration salts: sodium + potassium chloride with dextrose/glucose."""
+    try:
+        return execute_query(
+            "SELECT id, medicine_name, brand_name, strength, dosage_form, price, prescription_required "
+            "FROM medicines WHERE id IN ("
+            " SELECT medicine_id FROM medicine_ingredients WHERE ingredient_name_norm = ?"
+            " INTERSECT SELECT medicine_id FROM medicine_ingredients WHERE ingredient_name_norm = ?"
+            " INTERSECT SELECT medicine_id FROM medicine_ingredients"
+            "  WHERE ingredient_name_norm LIKE '%dextrose%' OR ingredient_name_norm LIKE '%glucose%')"
+            " ORDER BY price IS NULL, medicine_name LIMIT ?",
+            (_ORS_SALTS[0], _ORS_SALTS[1], limit),
+        )
+    except Exception:
+        return []
+
+
+def _extract_medicines(text, confidences=None, hints=None):
     lines = _candidate_lines(text)
     cache = {}
     medicines = []
     unmatched = []
     seen_ids = set()
     tokens_checked = 0
+    hints = hints or {}
+    live_budget = SCAN_LIVE_LOOKUPS if hints and _live_lookups_allowed() else 0
 
     for line in lines:
+        # Gemini's own notes on this line: the form it saw and the product's generic.
+        gemini = hints.get(normalize_measure(line))
         strength = _line_strength(line)
-        form_hint = _form_hint(line)
+        form_hint = _form_hint(line) or (_GEMINI_FORMS.get(gemini["form"]) if gemini else None)
+        generic_parts = _parse_generic(gemini["generic"]) if gemini else []
         match = None
         matched_hint = None
+        matched_via = None
+        line_alternatives = None
         tokens = _name_tokens(line)
         # A strength or dosage form is what separates a medicine line from a phone
         # number or clinic hours ("Tel", "Mon to Sat"). Without one, only a long
-        # whole-word brand name is trusted.
-        has_context = bool(strength or form_hint)
+        # whole-word brand name is trusted. Gemini is asked for medicine lines
+        # only, so its lines count as medicine lines.
+        has_context = bool(strength or form_hint or gemini)
         for index, token in enumerate(tokens):
             if tokens_checked >= MAX_NAME_TOKENS:
                 break
@@ -1104,13 +1486,106 @@ def _extract_medicines(text, confidences=None):
                 matched_hint = hint
                 break
 
+        if match and gemini and live_budget:
+            # "Pantakind Raft 2 tsf" is a suspension; the local catalog only has
+            # Pantakind tablets. When the row lacks the next printed word or the
+            # printed form, ask the live catalog for the fuller name once.
+            token, (row, _type, _score) = match
+            index = tokens.index(token)
+            name_hint = tokens[index + 1] if index + 1 < len(tokens) else None
+            row_words = _name_words(row["medicine_name"]) + _name_words(row["brand_name"])
+            hint_missing = bool(name_hint) and len(name_hint) >= 2 and not any(
+                word.startswith(name_hint.casefold()) for word in row_words
+            ) and name_hint in _brand_tokens(line, tokens)
+            form_missing = bool(form_hint) and not _form_ok(form_hint, row["dosage_form"])
+            if hint_missing or form_missing:
+                query = f"{token} {name_hint}" if hint_missing else token
+                live_budget -= 1
+                if _live_catalog_add(query, _brand_record_matches(query, last_word_prefix=True)):
+                    cache.clear()
+                    better = _match_token(token, strength, cache, form_hint, matched_hint, name_hint)
+                    if better:
+                        match = (token, better)
+
+        generic_names = {name for name, _strength, _label in generic_parts}
+        written_generic = bool(generic_parts) and all(
+            name in normalize_measure(line) for name in generic_names
+        )
+        if not match and gemini and live_budget and not written_generic:
+            # The brand Gemini read is not in the local catalog: ask the live India
+            # catalogs (the search page's own sources) for that exact brand.
+            for token in _brand_tokens(line, tokens):
+                index = tokens.index(token)
+                if live_budget <= 0 or len(token) < FUZZY_MIN_TOKEN:
+                    continue
+                if normalize_measure(token) in generic_names:
+                    continue
+                live_budget -= 1
+                if not _live_catalog_add(token, _brand_record_matches(token)):
+                    continue
+                cache.clear()
+                hint = _adjacent_strength(line, token)
+                name_hint = tokens[index + 1] if index + 1 < len(tokens) else None
+                candidate = _match_token(token, strength, cache, form_hint, hint, name_hint)
+                if candidate:
+                    match = (token, candidate)
+                    matched_hint = hint
+                    break
+
+        generic_rows = []
+        if not match and generic_parts:
+            generic_rows = _composition_products(generic_parts, form_hint, seen_ids)
+            if not generic_rows:
+                base_parts = _without_salt(generic_parts)
+                if base_parts and base_parts != generic_parts:
+                    generic_rows = _composition_products(base_parts, form_hint, seen_ids)
+            if not generic_rows and written_generic and live_budget:
+                live_budget -= 1
+                query = " ".join(label for _name, _strength, label in generic_parts)
+                if _live_catalog_add(query, _composition_record_matches(generic_parts)):
+                    generic_rows = _composition_products(generic_parts, form_hint, seen_ids)
+            if generic_rows and written_generic:
+                # The line itself names the generic ("Tab Diclofenac 50 mg"), so the
+                # composition is printed evidence, not the model's opinion.
+                generic_token = next(
+                    (token for token in tokens if normalize_measure(token) in generic_names),
+                    generic_parts[0][2],
+                )
+                match = (generic_token, (generic_rows[0], "partial", None))
+                matched_via = "generic"
+                line_alternatives = [
+                    _product_entry(row, "composition", form_hint) for row in generic_rows[1:]
+                ]
+
         line_confidence = _line_confidence(line, confidences)
+        if not match and generic_rows and len(unmatched) < MAX_UNMATCHED:
+            # Brand absent from the catalog: show products recorded with the
+            # composition Gemini named, clearly as the AI's unverified reading.
+            label = _generic_label(generic_parts)
+            unmatched.append({
+                "text": line[:160],
+                "strength": strength,
+                "query": tokens[0] if tokens else line[:40],
+                "ocr_confidence": line_confidence,
+                "generic_name": label,
+                "generic_source": "gemini",
+                "suggestions": [_product_entry(row, "generic", form_hint) for row in generic_rows],
+                "note": (f"This medicine is not in the catalog. The AI reader says it contains "
+                         f"{label}; that is not verified. These catalog products list the same "
+                         f"composition. Same composition does not mean interchangeable: confirm "
+                         f"with your doctor or pharmacist."),
+            })
+            continue
         if not match:
             abbreviation = next(
                 (token for token in tokens if token.casefold() in _KNOWN_ABBREVIATIONS), None
             )
             if abbreviation:
                 known = _known_abbreviation_entry(abbreviation, line, line_confidence)
+                if not known.get("medicine_id") and abbreviation.casefold() == "ors" and live_budget:
+                    live_budget -= 1
+                    if _live_catalog_add("ORS", _ors_record_matches):
+                        known = _known_abbreviation_entry(abbreviation, line, line_confidence)
                 if known.get("medicine_id"):
                     if known["medicine_id"] not in seen_ids:
                         seen_ids.add(known["medicine_id"])
@@ -1124,7 +1599,13 @@ def _extract_medicines(text, confidences=None):
                 continue
             if not (strength or form_hint) and _looks_garbled(line):
                 continue  # noise, not a printed name: offer no suggestions for it
-            suggestions = _suggest_matches(line, tokens, strength, form_hint, cache) if long_token else []
+            # Gemini lines carry directions after the name ("... for seven days");
+            # only the printed name words may suggest look-alike brands there.
+            suggest_tokens = _brand_tokens(line, tokens) if gemini else tokens
+            suggestions = (
+                _suggest_matches(line, suggest_tokens, strength, form_hint, cache)
+                if any(len(token) >= 4 for token in suggest_tokens) else []
+            )
             accepted = _auto_accept(suggestions, strength, form_hint)
             if accepted and accepted["medicine_id"] not in seen_ids:
                 seen_ids.add(accepted["medicine_id"])
@@ -1138,6 +1619,7 @@ def _extract_medicines(text, confidences=None):
                     "price": accepted["price"],
                     "prescription_required": accepted["prescription_required"],
                     "match_type": "possible",
+                    "matched_via": "suggestion",
                     "match_score": accepted["score"],
                     "strength_match": accepted["strength_match"],
                     "ocr_confidence": line_confidence,
@@ -1193,7 +1675,13 @@ def _extract_medicines(text, confidences=None):
             "ocr_confidence": line_confidence,
             "dosage_text": _dosage_text(line),
             "source_line": line[:160],
-            "alternatives": [],
+            "matched_via": matched_via or "name",
+            # Not a sure match: offer the next readings too, so the user sees the
+            # top three and can pick the one written on the prescription.
+            "alternatives": line_alternatives if line_alternatives is not None else (
+                _runner_ups(token, strength, form_hint, matched_hint, row)
+                if effective_match_type != "exact" else []
+            ),
         })
 
     return medicines, unmatched
@@ -1218,6 +1706,7 @@ def parse_prescription_medicines(file_storage):
     text = ""
     provider = ""
     confidences = {}
+    _gemini_hints.value = {}
     try:
         file_storage.save(str(stored_path))
         text, provider = _read_text(stored_path, suffix, confidences)
@@ -1246,7 +1735,9 @@ def parse_prescription_medicines(file_storage):
             provider,
         )
 
-    medicines, unmatched = _extract_medicines(text, confidences)
+    hints = getattr(_gemini_hints, "value", None) or {}
+    _gemini_hints.value = None
+    medicines, unmatched = _extract_medicines(text, confidences, hints)
     warning = None
     if _handwriting_suspected(text):
         warning = (

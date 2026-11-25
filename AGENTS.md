@@ -1191,3 +1191,42 @@ suspension/infusion forms (`_FORM_SYNONYMS`), a printed form outranks strength w
 `(250/5)` on a syrup line is 250 mg, direction words (pain, otic, ear, right, …) are stopwords, and
 a match is `exact` only when the printed strength is confirmed by the row. Gemini free tier hit
 HTTP 429 (quota) after ~20 pages in one afternoon. 109 offline tests pass.
+
+## Update — scanner accuracy round 2 (2026-11-26)
+
+Branch `claude/project-thread-a9csqw` (from `claude/project-thread-of3tt4`), `backend/ocr_service.py`:
+- **Extra Gemini keys.** `GEMINI_API_KEY_2` … `GEMINI_API_KEY_9` are optional. A key that answers
+  429 on every model rests for an hour (`GEMINI_KEY_COOLDOWN_SECONDS`) and the next key is used; a
+  rejected key (400/401/403) also hands over. The log names the variable ("GEMINI_API_KEY used up
+  its free quota; switching to GEMINI_API_KEY_2"), never the key. 503/timeouts do not switch keys.
+  Each key must come from its own Google Cloud project (quota is per project). Stays free tier.
+- **Structured Gemini answer.** The prompt asks for JSON `[{line, form, generic}]`
+  (`responseMimeType: application/json`); plain-text answers still work. `generic` is Gemini's
+  own knowledge, so it is used only (a) to match a line that itself prints that generic, or
+  (b) to list catalog products recorded with that composition for a brand missing from the catalog,
+  as an `unmatched_lines` entry with `generic_source: "gemini"` and a note saying the composition is
+  not verified and same composition is not interchangeability.
+- **Gemini lines count as medicine lines** (no printed strength/form needed), and Gemini's `form`
+  fills in a missing form hint. `2 tsf` is a liquid dose (syrup hint).
+- **Live catalog lookup for missing brands** (Gemini lines only, at most 4 lookups per scan,
+  `MEDFINDER_SCAN_LIVE_CATALOG=0` turns it off): the printed brand words (before the first number)
+  are looked up in DrugDB, then PharmEasy, via the search page's own clients and
+  `save_catalog_medicine`; only listings whose name starts with the printed brand as whole words are
+  saved, so every added row carries its listing's name/form/strength/composition and `api_source`.
+  Misses are cached as `scan-live:<name>`. When a local brand row lacks the printed form ("Pantakind
+  Raf 2 tsf" vs Pantakind tablets) the live catalog is asked once for the fuller product.
+- **ORS** now matches a catalog product listing sodium + potassium chloride with dextrose/glucose
+  (`matched_via: "composition"`), looking it up live once if the catalog has none.
+- **Top three when unsure.** Any non-exact match carries up to two `alternatives` (other products of
+  the same printed brand, or other products of the same printed generic).
+
+Re-score on the same 23 real-photo lines, same stored Gemini transcription (so only matching
+changed): right product **8 → 13**, wrong 0 → 0. Gained: ORS, Pantakind Raft, Vonalong, Vitazyme,
+Celecoxib. Enzabil matches the tablet; the line may mean Enzabil C syrup, so it is not counted.
+Still missed: 6 brands absent from every Indian catalog checked (Ultrafen Plus, Relentus,
+Ultracal-D ×2, Cartilix — Bangladesh; PND otic — Philippines) and 3 lines Gemini misread or skipped
+(Omeprazole, Frisium, Tonoferon). The `generic` field could not be scored fairly: the main Gemini
+models were out of free quota and `gemini-flash-lite-latest` reads these photos much worse.
+Rows added to the real DB by the live lookups: Ranbaxy ORS, 7 celecoxib 200 mg products,
+Vonalong 10/20, Vitazyme capsule/drops, Enzabil, Pantakind variants incl. Pantakind Raft. Misread
+lookups during testing (Sevelamer "Sevent", Pneumovax, Lycozon) were deleted. 111 offline tests pass.

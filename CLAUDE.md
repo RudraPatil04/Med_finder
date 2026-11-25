@@ -34,7 +34,8 @@ caveats. This file is the current state; read AGENTS.md when you need the *why* 
    same ingredient set/strength/form/release carrying `price > 0` and a pack size.
 6. **No invented content.** No ratings, testimonials, confidence scores or "savings" that are
    not computed from stored prices. (A previous pass removed all of those — do not reintroduce.)
-7. **Secrets come from the environment**: `DRUGSETU_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_VISION_API_KEY`,
+7. **Secrets come from the environment**: `DRUGSETU_API_KEY`, `GEMINI_API_KEY` (plus optional
+   `GEMINI_API_KEY_2` … `_9`, used in turn when one free quota runs out), `GOOGLE_VISION_API_KEY`,
    `DRUGDB_API_KEY`. Never commit a key.
 8. **Do not rebuild the database casually.** `etl/build_database.py` drops `medicines`,
    `medicine_ingredients` and `api_search_cache`. `etl/repair_ingredient_prefixes.py` must be
