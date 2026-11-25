@@ -94,7 +94,7 @@ _NAME_TOKEN = re.compile(r"\b[A-Za-z][A-Za-z0-9-]{2,}\b")
 _FORM_HINTS = (
     (re.compile(r"\b(?:tab|tabs|tablet|tablets)\b|(?:^|\s)T\.\s", re.I), "tablet"),
     (re.compile(r"\b(?:cap|caps|capsule|capsules)\b|(?:^|\s)C\.\s", re.I), "capsule"),
-    (re.compile(r"\b(?:syr|syrup|susp|suspension)\b", re.I), "syrup"),
+    (re.compile(r"\b(?:syr|syp|syrup|susp|suspension)\b", re.I), "syrup"),
     (re.compile(r"\b(?:inj|injection|infusion)\b", re.I), "injection"),
     (re.compile(r"\b(?:drop|drops)\b", re.I), "drops"),
 )
@@ -157,6 +157,9 @@ _STOPWORDS = {
     "medicine", "medicines", "drug", "drugs", "rx", "mg", "mcg", "ml", "gm",
     "od", "bd", "bid", "tds", "tid", "qid", "qds", "hs", "sos", "prn",
     "syp", "syr", "inj", "susp", "soln", "bp", "hr", "kg", "cm",
+    # Directions and body sites ("as needed for pain", "drops to right ear").
+    "pain", "fever", "cough", "cold", "ear", "ears", "eye", "eyes", "nose", "otic",
+    "right", "left", "both", "sig", "cont", "wks", "hrs", "hourly", "stat",
 }
 
 
@@ -535,7 +538,13 @@ def _clean_line(line):
     return re.sub(r"\s+", " ", line.replace("|", "l")).strip()
 
 
+_PER_5ML = re.compile(r"\(?\b(\d+(?:\.\d+)?)\s*/\s*5\s*(?:ml)?\s*\)?", re.I)
+
+
 def _line_strength(line):
+    per_5ml = _PER_5ML.search(line)
+    if per_5ml and _form_hint(line) == "syrup":
+        return f"{per_5ml.group(1)}mg"
     corrected = re.sub(r"(?<=\d)[Oo](?=\d|[a-z])", "0", line)  # 4omg -> 40mg
     corrected = re.sub(r"(?<=\d)\s*wg\b", "mg", corrected, flags=re.I)  # 40wg -> 40mg
     match = _STRENGTH.search(corrected)
@@ -574,6 +583,20 @@ def _strength_state(row, target_strength, strength_number):
     if strength_number and name_numbers and row_strength:
         return False
     return None
+
+
+# A handwritten "Syp" covers every oral liquid the catalog may record.
+_FORM_SYNONYMS = {
+    "syrup": ("syrup", "suspension", "solution", "elixir", "expectorant", "linctus"),
+    "injection": ("injection", "infusion"),
+}
+
+
+def _form_ok(form_hint, dosage_form):
+    if not form_hint:
+        return True
+    form = str(dosage_form or "").casefold()
+    return any(word in form for word in _FORM_SYNONYMS.get(form_hint, (form_hint,)))
 
 
 def _form_hint(line):
@@ -623,7 +646,7 @@ def _fuzzy_lookup(token, target_strength, strength_number, form_hint):
         key, labels, scorer=fuzz.WRatio, score_cutoff=FUZZY_CUTOFF, limit=FUZZY_MATCHES
     ):
         row = owners[index]
-        if form_hint and form_hint not in str(row["dosage_form"] or "").casefold():
+        if form_hint and not _form_ok(form_hint, row["dosage_form"]):
             continue
         if (target_strength or strength_number) and _strength_state(
             row, target_strength, strength_number
@@ -703,7 +726,7 @@ def _match_token(token, line_strength, cache, form_hint=None, strength_hint=None
         )
         strength = _strength_state(row, target_strength, strength_number)
         strength_rank = 0 if strength is True else 1 if strength is None else 2
-        form_ok = not form_hint or form_hint in str(row["dosage_form"] or "").casefold()
+        form_ok = _form_ok(form_hint, row["dosage_form"])
         hint_rank = 0 if strength_number and strength_number in _name_numbers(row["medicine_name"]) else 1
         # "Ibugesic Plus" must beat the plain "Ibugesic" product, and among Plus
         # products the one adding the fewest words wins ("Plus" over "Plus NF").
@@ -712,7 +735,9 @@ def _match_token(token, line_strength, cache, form_hint=None, strength_hint=None
         if hint_boundary:
             printed = {token_key, name_hint.casefold()}
             extra_rank = len([word for word in name_words if word not in printed])
-        rank = (strength_rank, 0 if exact else 1, name_rank, extra_rank, 0 if form_ok else 1, hint_rank)
+        # A printed form ("Syp", "Tab") outranks strength: Meftal-P (100/5) is the
+        # suspension, not the 100 mg dispersible tablet.
+        rank = (0 if form_ok else 1, strength_rank, 0 if exact else 1, name_rank, extra_rank, hint_rank)
         if best_rank is None or rank < best_rank:
             best, best_rank = (row, exact), rank
 
@@ -822,7 +847,7 @@ def _suggest_matches(line, tokens, strength, form_hint, cache):
         if found:
             row = found[0]
             strength_ok = _strength_state(row, target_strength, strength_number or hint)
-            form_ok = not form_hint or form_hint in str(row["dosage_form"] or "").casefold()
+            form_ok = _form_ok(form_hint, row["dosage_form"])
             key = row["id"]
             entry = {
                 "medicine_id": row["id"],
@@ -878,7 +903,7 @@ def _ingredient_product(ingredient, target_strength, strength_number, form_hint)
     for row in rows:
         if _strength_state(row, target_strength, strength_number) is not True:
             continue
-        form_ok = not form_hint or form_hint in str(row["dosage_form"] or "").casefold()
+        form_ok = _form_ok(form_hint, row["dosage_form"])
         price = row["price"] if row["price"] else float("inf")
         ranked.append((0 if form_ok else 1, price, row))
     if not ranked:
@@ -1149,7 +1174,7 @@ def _extract_medicines(text, confidences=None):
         printed_strength = bool(strength or matched_hint)
         effective_match_type = (
             "possible"
-            if match_type == "exact" and (strength_match is False or not printed_strength)
+            if match_type == "exact" and (strength_match is not True or not printed_strength)
             else match_type
         )
 

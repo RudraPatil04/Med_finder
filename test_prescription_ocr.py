@@ -254,6 +254,27 @@ class PrescriptionOcrTests(unittest.TestCase):
         self.assertEqual([item["name"] for item in medicines], ["Dolo 650 Tablet"])
         self.assertEqual(medicines[0]["match_type"], "exact")
 
+    def test_syp_line_with_per_5ml_strength_picks_the_suspension(self):
+        self._insert("Meftal-P Dispersible Tablet", "Meftal-P", "100mg", "Tablet", "Mefenamic Acid (100mg)")
+        self._insert("Meftal-P Suspension", "Meftal-P", "100mg/5ml", "Suspension", "Mefenamic Acid (100mg/5ml)")
+        self._insert("Flexon Suspension", "Flexon", "100mg", "Suspension", "Ibuprofen (100mg)")
+
+        medicines, _ = ocr_service._extract_medicines("Syp MEFTAL-P (100/5) 3 mL SOS\nSyp Flexon\n")
+
+        self.assertEqual([item["name"] for item in medicines], ["Meftal-P Suspension", "Flexon Suspension"])
+        self.assertNotEqual(medicines[0]["match_type"], "exact")
+
+    def test_direction_words_are_not_matched_as_brands(self):
+        self._insert("A Pain 100mg/325mg Tablet", "A Pain", "100mg/325mg", "Tablet", "Aceclofenac (100mg)")
+        self._insert("Otic 200mg Tablet", "Otic", "200mg", "Tablet", "Ofloxacin (200mg)")
+
+        medicines, _ = ocr_service._extract_medicines(
+            "PND otic drops 2-3 drops to right ear\n"
+            "capsule celecoxib 200 mg Take 1 cap every 12 hours as needed for pain\n"
+        )
+
+        self.assertEqual(medicines, [])
+
     def test_ors_line_is_reported_without_look_alike_suggestions(self):
         medicines, unmatched = ocr_service._extract_medicines(
             "Inj 5% Dextrose IV stat\nAdequate fluid intake\nORS 2 packets\n"

@@ -1177,3 +1177,17 @@ scored with the app's own parser. Gemini: 26/26 correct product and strength. Te
 correct, 2 only as the top suggestion, 1 wrong strength (Dolo "€50"), 4 missed; 0 extra
 medicines for either. Fonts are far neater than real handwriting, so these are upper bounds.
 Gemini free tier answered 503 for `gemini-flash-latest` on every page; pages took 11-65 s.
+
+### Real-photo check (2026-11-25, same day)
+8 unique real photos from the owner (10 sent, 2 duplicates). Ground truth was read by eye; two
+photos (dense Hindi/Devanagari, and one where Gemini itself answered "Unclear") were left out, and
+one illegible line, leaving 23 medicine lines. Gemini transcribed 20/23 names correctly. After the
+parser, 9/23 were the right catalog product, 1 was offered as the top suggestion, 0 wrong, 13
+missed: 10 because the medicine is not in the catalog (Ultracal-D, Cartilix, Relentus, Vonalong,
+Vitazyme, Enzabil C, Ultrafen Plus, Pantakind Raft, PND otic, …) and 3 that Gemini misread or
+skipped. Tesseract: 0/23 correct, 2 wrong. Before this round's fixes the parser had 5 correct and
+5 wrong on the same Gemini text. Fixes: `Syp` is a syrup hint, syrup/injection hints accept
+suspension/infusion forms (`_FORM_SYNONYMS`), a printed form outranks strength when ranking,
+`(250/5)` on a syrup line is 250 mg, direction words (pain, otic, ear, right, …) are stopwords, and
+a match is `exact` only when the printed strength is confirmed by the row. Gemini free tier hit
+HTTP 429 (quota) after ~20 pages in one afternoon. 109 offline tests pass.
