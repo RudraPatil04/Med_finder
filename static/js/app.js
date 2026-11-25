@@ -1118,7 +1118,7 @@
         const read = item.ocr_confidence != null ? " · Read confidence " + Math.round(item.ocr_confidence) + "%" : "";
         return '<div data-unmatched data-source-line="' + escapeHtml(printed) + '"><span class="feature-icon soft"><span class="icon icon-file"></span></span>' +
             '<div class="min-grow"><strong>' + escapeHtml(printed) + '</strong>' +
-            '<small>' + (chips ? 'Not sure which medicine this is. Tap the one written on the prescription.' : 'Not matched to a catalog medicine') + escapeHtml(read) + '</small>' +
+            '<small>' + (item.note ? escapeHtml(item.note) : chips ? 'Not sure which medicine this is. Tap the one written on the prescription.' : 'Not matched to a catalog medicine') + escapeHtml(read) + '</small>' +
             (chips ? '<div class="scan-chips">' + chips + '</div>' : '') +
             correctPanel(query, printed) +
             '</div>' +

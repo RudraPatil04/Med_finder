@@ -110,7 +110,16 @@ _DOSAGE_PATTERNS = (
     re.compile(r"\b\d+\s*(?:days?|weeks?|months?)\b", re.I),
     re.compile(r"\b(?:take\s+)?(?:\d{1,2}|half|one|two)\s*(?:tablet|capsule|cap|tab|tsp|ml)s?\b", re.I),
     re.compile(r"\b(?:morning|afternoon|evening|night|bedtime)\b", re.I),
+    re.compile(r"\b\d+\s*(?:packets?|pkts?|sachets?|pouch(?:es)?|bottles?|strips?)\b", re.I),
 )
+# Generics that prescriptions write as an abbreviation, mapped to the name the
+# catalog would record. A line naming one is always reported (matched when the
+# catalog has the product, otherwise "not in the catalog"), never fuzzy-matched
+# to a look-alike brand.
+_KNOWN_ABBREVIATIONS = {
+    "ors": "Oral rehydration salts",
+}
+_DOTTED_ORS = re.compile(r"\bO\.\s?R\.\s?S\b\.?", re.I)
 # "12 MG Road" is an address, not a 12 mg dose; Indian streets make MG ambiguous.
 _ADDRESS_UNIT = re.compile(
     r"\b\d+\s*(?:mg|mcg|g|ml)\s*(?:road|rd|street|lane|nagar|colony|sector|chowk)\b", re.I
@@ -133,6 +142,9 @@ _STOPWORDS = {
     "tablet", "tablets", "tab", "tabs", "capsule", "capsules", "cap", "caps",
     "syrup", "suspension", "injection", "inj", "cream", "ointment", "gel", "drops",
     "spray", "inhaler", "solution", "lotion", "sachet", "powder",
+    # Pack words ("ORS 2 packets") are quantities, never part of a medicine name.
+    "sachets", "packet", "packets", "pkt", "pkts", "pouch", "pouches",
+    "bottle", "bottles", "strip", "strips", "vial", "vials", "ampoule", "ampoules",
     "take", "taking", "use", "apply", "daily", "once", "twice", "thrice",
     "after", "before", "with", "without", "and", "the", "for", "from", "each",
     "every", "times", "time", "hours", "hour", "days", "day", "weeks", "week",
@@ -517,6 +529,7 @@ def normalize_ocr_line(line):
 
 
 def _clean_line(line):
+    line = _DOTTED_ORS.sub("ORS", line)
     line = normalize_ocr_line(line)
     line = _RX_MARKER.sub("", line)
     return re.sub(r"\s+", " ", line.replace("|", "l")).strip()
@@ -984,6 +997,54 @@ def _name_tokens(line):
     return tokens
 
 
+def _known_abbreviation_entry(token, line, line_confidence):
+    """A line naming a known abbreviation ("ORS"): the catalog product, or a note.
+
+    A catalog product counts only when its name carries the abbreviation as a
+    word or its name/composition carries the full generic name. Otherwise the
+    line is reported as absent from the catalog, with no look-alike suggestions.
+    """
+    generic = _KNOWN_ABBREVIATIONS[token.casefold()]
+    try:
+        rows = execute_query(
+            "SELECT id, medicine_name, brand_name, strength, dosage_form, price, prescription_required "
+            "FROM medicines WHERE ' ' || medicine_name || ' ' LIKE ? OR medicine_name LIKE ? "
+            "OR composition LIKE ? ORDER BY price IS NULL, price LIMIT 1",
+            (f"% {token} %", f"%{generic}%", f"%{generic}%"),
+        )
+    except Exception:
+        rows = []
+    for row in rows:
+        return {
+            "medicine_id": row["id"],
+            "name": row["medicine_name"],
+            "matched_text": token,
+            "brand": row["brand_name"],
+            "strength": row["strength"],
+            "dosage_form": row["dosage_form"],
+            "price": row["price"],
+            "prescription_required": row["prescription_required"],
+            "match_type": "possible",
+            "match_score": None,
+            "strength_match": None,
+            "ocr_confidence": line_confidence,
+            "dosage_text": _dosage_text(line),
+            "source_line": line[:160],
+            "alternatives": [],
+        }
+    return {
+        "text": line[:160],
+        "strength": None,
+        "query": generic,
+        "ocr_confidence": line_confidence,
+        "suggestions": [],
+        "generic_name": generic,
+        "not_in_catalog": True,
+        "note": (f"{token.upper()} means {generic.lower()}. It was read from the prescription, but "
+                 f"the catalog has no {generic.lower()} product, so there is no price to compare."),
+    }
+
+
 def _extract_medicines(text, confidences=None):
     lines = _candidate_lines(text)
     cache = {}
@@ -1020,6 +1081,18 @@ def _extract_medicines(text, confidences=None):
 
         line_confidence = _line_confidence(line, confidences)
         if not match:
+            abbreviation = next(
+                (token for token in tokens if token.casefold() in _KNOWN_ABBREVIATIONS), None
+            )
+            if abbreviation:
+                known = _known_abbreviation_entry(abbreviation, line, line_confidence)
+                if known.get("medicine_id"):
+                    if known["medicine_id"] not in seen_ids:
+                        seen_ids.add(known["medicine_id"])
+                        medicines.append(known)
+                elif len(unmatched) < MAX_UNMATCHED:
+                    unmatched.append(known)
+                continue
             long_token = any(len(token) >= 4 for token in tokens)
             listable = strength or form_hint or (2 <= len(tokens) <= 8 and long_token)
             if not listable or len(unmatched) >= MAX_UNMATCHED:

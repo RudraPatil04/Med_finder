@@ -1156,3 +1156,24 @@ the next model, other errors (bad key, 400) stop. The free tier answered 503 "hi
 which models were skipped and why, and says when `GEMINI_API_KEY` is missing from its environment.
 The key is a Windows *user* variable, so a terminal opened before it was set does not see it.
 2 new tests (100 offline tests pass).
+
+## Update — ORS line + scanner accuracy check (2026-11-25)
+
+A real hospital prescription ("Inj 5% Dextrose iv stat", "Adequate fluid intake", "ORS 2 packets")
+showed only Dextrose 5% Infusion. Cause: the catalog has **no ORS product at all** (no "ORS" name,
+no Electral/ORSL, no oral-rehydration composition), so the line fell into "Read but not matched",
+where the word "packets" produced look-alike suggestions (Pacset, Parcet, Paknet-BC).
+Fix in `backend/ocr_service.py`: pack words (packet(s), sachets, pouch, bottle, strip, vial,
+ampoule) are stopwords and "2 packets" is dosage text; `_KNOWN_ABBREVIATIONS` maps `ORS` (also
+`O.R.S.`) to "Oral rehydration salts". A line naming one matches a catalog product whose name has
+the word or whose name/composition has the generic name; otherwise it is listed unmatched with
+`not_in_catalog: true`, no suggestions, and a `note` the UI shows ("read from the prescription,
+but the catalog has no oral rehydration salts product"). 3 new tests; 107 offline tests pass.
+Asset version `20261125-2`.
+
+Accuracy check (synthetic only, no real photos in the repo): 9 rendered prescriptions in 8
+handwriting-style fonts with blur/rotation/noise, 26 medicine lines (24 brands + Dextrose + ORS),
+scored with the app's own parser. Gemini: 26/26 correct product and strength. Tesseract: 19
+correct, 2 only as the top suggestion, 1 wrong strength (Dolo "€50"), 4 missed; 0 extra
+medicines for either. Fonts are far neater than real handwriting, so these are upper bounds.
+Gemini free tier answered 503 for `gemini-flash-latest` on every page; pages took 11-65 s.

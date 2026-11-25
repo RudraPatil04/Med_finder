@@ -254,6 +254,31 @@ class PrescriptionOcrTests(unittest.TestCase):
         self.assertEqual([item["name"] for item in medicines], ["Dolo 650 Tablet"])
         self.assertEqual(medicines[0]["match_type"], "exact")
 
+    def test_ors_line_is_reported_without_look_alike_suggestions(self):
+        medicines, unmatched = ocr_service._extract_medicines(
+            "Inj 5% Dextrose IV stat\nAdequate fluid intake\nORS 2 packets\n"
+        )
+
+        ors = [item for item in unmatched if item["text"] == "ORS 2 packets"]
+        self.assertEqual(len(ors), 1)
+        self.assertTrue(ors[0]["not_in_catalog"])
+        self.assertEqual(ors[0]["suggestions"], [])
+        self.assertEqual(ors[0]["query"], "Oral rehydration salts")
+        self.assertNotIn("fluid", " ".join(item["text"] for item in unmatched))
+
+    def test_dotted_ors_matches_a_catalog_ors_product(self):
+        self._insert("Electral ORS Powder", "Electral", None, "Powder", "Sodium Chloride + Potassium Chloride + Sodium Citrate + Dextrose")
+
+        medicines, unmatched = ocr_service._extract_medicines("O.R.S. 1 sachet in 1 litre water\n")
+
+        self.assertEqual([item["name"] for item in medicines], ["Electral ORS Powder"])
+        self.assertEqual(medicines[0]["match_type"], "possible")
+        self.assertEqual(unmatched, [])
+
+    def test_pack_quantity_is_dosage_not_a_name(self):
+        self.assertEqual(ocr_service._dosage_text("ORS 2 packets"), "2 packets")
+        self.assertNotIn("packets", ocr_service._name_tokens("ORS 2 packets"))
+
     def test_doctor_name_is_not_matched_to_a_medicine_that_contains_it(self):
         self._insert("Pramodep 50mg Tablet", "Pramodep", "50mg", "Tablet", "Pramipexole (50mg)")
 
