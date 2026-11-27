@@ -141,6 +141,10 @@ Tests (unittest, offline, 83 focused tests):
 6. **Composition gap.** 77,435 rows are incomplete; the backfill fills ~78% of sampled rows at
    ~2.3 s/row (about 49 hours for the whole pool) and needs the source CSV. Enrichment is
    currently on-demand only (DrugSetu key was a 100-request trial and is exhausted).
+6b. **Ciprofloxacin is recorded as ofloxacin.** Every Ciplox/Cifran row reads "Ofloxacin"; only
+   26 rows say ciprofloxacin; ~600 "Ofloxacin" tablets at 250/500/750/1000 mg are probably cipro.
+   From the source data. Alternatives *matching* measured 100% precision / 99.6% recall on 2026-11-27
+   (`python -m eval.alternatives_eval`, plus `sample 40`), but that cannot see catalog errors like this.
 7. **Suggestions are prefix-only.** (Search itself measured 97.2% / 96.1% top-1 on the
    72-query and 51-query held-out sets on 2026-11-27: `python -m eval.search_eval all`.) `metformin` suggests nothing because seeds/queries match
    name and brand, never ingredients; the starter list is fixed at 8 brands.

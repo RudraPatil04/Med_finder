@@ -1270,3 +1270,48 @@ Caveats:
   Combiflam), `Hifen` (real brand "Hifen 250"), `Brufin` (no confident correction).
 - A misspelling of a missing brand can be corrected to a look-alike product; the banner and the
   exact-search button are the guard. Threshold 90 keeps `Electral` from becoming `Electril`.
+
+## Update — alternative-medicines accuracy (2026-11-27)
+
+New offline eval `python -m eval.alternatives_eval` (59 hand-picked cases: 24 single-ingredient,
+8 combinations, 11 liquids/drops/sachets, 3 form variants, 8 that must be blocked, 5 with no
+composition) and `python -m eval.alternatives_eval sample 40` (held-out, products picked by a
+hash of the id). It scores what `/api/substitutes/<id>?limit=10&live=0` shows, with enrichment
+stubbed. The checker re-parses raw `composition` text with decimals and units, reads form
+variants and release markers from the name, and measures recall against every catalog product
+that agrees and has a price + pack size.
+
+| Set | Before precision / recall / restricted blocked | After |
+|---|---|---|
+| Hand-picked 59 | 682/741 (92.0%) / 23,447/29,775 (78.7%) / 4 of 8 | 673/673 (100%) / 29,662/29,773 (99.6%) / 8 of 8 |
+| Held-out 40 | 497/512 (97.1%) / 15,241/19,775 (77.1%) / – | 531/531 (100%) / 19,676/19,774 (99.5%) / – |
+
+Known brands (Crocin 650 for Dolo 650, Clavam for Augmentin, ...): 55 of 55 in the candidate set
+before and after (not necessarily in the 10 shown).
+
+What changed:
+- `medicine_data`: `PR`, `DSR`, `SA` count as modified release (Pan-D PR, Glycomet-GP PR, Amlong MT
+  PR were compared with plain products); `thyroxine` is narrow therapeutic index (Thyronorm reads
+  "Thyroxine", so it was compared); respules/rotacaps/nebuliser/inhalation names are inhaled forms;
+  new `form_variant()` (DT/dispersible, MD/ODT, VT/vaginal, chewable, effervescent, sublingual).
+  6,245 complete-composition products are newly restricted (5,323 MR, 330 inhaled, 592 thyroxine).
+- `recommendation_service._candidate_rows`: candidates come through the reference's rarest
+  ingredient instead of `lower(strength) = ?`, because combination rows fill the strength column
+  inconsistently ("200mg" vs "200mg/500mg"); 6,326 true matches were missed that way. The strength
+  columns must still agree: equal, or both only restate amounts from the identical composition.
+  Raw ingredient strengths are compared with decimals, because `ingredient_strength_norm` drops
+  the point (12.5mg, 125mg and 1.25mg all read "125mg"). Form variants must match.
+- Jan Aushadhi rows of another form variant (e.g. orally disintegrating) are not offered.
+
+Caveats:
+- The checker and the fixes encode the same rules, so 100% means "no violation of these rules",
+  not clinical equivalence. The catalog's own errors are invisible to it.
+- PharmEasy spot check (46 references + 1 shown alternative each): 43 agree, 36 not listed, 11
+  differ; most differences were the crude name lookup picking another product. One real error:
+  every `Ciplox` / `Cifran` row is recorded as **Ofloxacin** (should be ciprofloxacin; the catalog
+  has only 26 ciprofloxacin rows). About 600 "Ofloxacin" tablets at 250/500/750/1000 mg are probably
+  ciprofloxacin. Present in the 2026-11-15 backup, so it comes from the source data. Not fixed.
+- Liquids: almost none have a pack size, so they only get the same-pack review list, never a
+  price-ranked one. `Azithral 200 Liquid` has no dosage form and gets nothing.
+- Missing composition (Zincovit, Digene, Neurobion Forte tablet, Betnovate, Moxicip): no
+  alternatives at all, as designed.

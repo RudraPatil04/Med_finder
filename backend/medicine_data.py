@@ -219,7 +219,7 @@ def normalize_dosage_form(value):
 NARROW_THERAPEUTIC_INDEX = frozenset({
     "acenocoumarol", "aminophylline", "carbamazepine", "ciclosporin", "clozapine",
     "colchicine", "cyclosporine", "digoxin", "ethosuximide", "everolimus",
-    "levothyroxine", "liothyronine", "lithium", "methotrexate", "mycophenolate",
+    "levothyroxine", "liothyronine", "lithium", "thyroxine", "methotrexate", "mycophenolate",
     "phenobarbital", "phenobarbitone", "phenytoin", "primidone", "sirolimus",
     "tacrolimus", "theophylline", "valproate", "valproic", "warfarin",
 })
@@ -227,8 +227,35 @@ NARROW_THERAPEUTIC_INDEX = frozenset({
 # Forms dispensed or administered under supervision, where a cheaper brand is
 # not a self-service decision even when the composition matches.
 SUPERVISED_DOSAGE_FORMS = frozenset({"injection", "inhaler"})
+# Nebulised and dry-powder inhaled products often carry another form label.
+_INHALED_FORM = re.compile(r"respule|rotacap|nebuli[sz]|inhal|transcap", re.I)
 
-_MODIFIED_RELEASE_ABBREV = re.compile(r"\b(?:XR|ER|SR|CR|MR|XL|DR|EC|LA|OD|TR)\b", re.I)
+# PR (prolonged release), DSR (delayed + sustained, e.g. pantoprazole + domperidone)
+# and SA (sustained action) appear in Indian product names with an empty release column.
+_MODIFIED_RELEASE_ABBREV = re.compile(
+    r"\b(?:XR|ER|SR|CR|MR|XL|DR|EC|LA|OD|TR|PR|DSR|SA)\b", re.I)
+
+# Name-level variants of one dosage form. A dispersible, mouth-dissolving or vaginal
+# tablet is not the same product as a plain tablet even with the same composition.
+_FORM_VARIANTS = (
+    (re.compile(r"\b(?:DT|dispersible)\b", re.I), "dispersible"),
+    (re.compile(r"\b(?:MD|ODT|mouth\s+dissolving|orally\s+disintegrating)\b", re.I),
+     "orodispersible"),
+    (re.compile(r"\b(?:VT|vaginal|pessary)\b", re.I), "vaginal"),
+    (re.compile(r"\bchewable\b", re.I), "chewable"),
+    (re.compile(r"\beffervescent\b", re.I), "effervescent"),
+    (re.compile(r"\bsublingual\b", re.I), "sublingual"),
+)
+
+
+def form_variant(*values):
+    """Return the named variant of a dosage form (dispersible, vaginal, ...), or None."""
+    for value in values:
+        text = _text(value)
+        for pattern, label in _FORM_VARIANTS:
+            if pattern.search(text):
+                return label
+    return None
 _MODIFIED_RELEASE_WORDS = re.compile(
     r"\b(?:extended|sustained|controlled|modified|prolonged|slow|delayed|timed)\s+release\b"
     r"|\bretard\b|\bdepot\b|\bosmotic\b",
@@ -257,7 +284,9 @@ def restricted_reason(medicine, ingredient_names=()):
     if is_modified_release(medicine.get("release_type"), medicine.get("medicine_name"),
                            medicine.get("brand_name")):
         return "it is a modified-release formulation"
-    if normalize_dosage_form(medicine.get("dosage_form")) in SUPERVISED_DOSAGE_FORMS:
+    if (normalize_dosage_form(medicine.get("dosage_form")) in SUPERVISED_DOSAGE_FORMS
+            or _INHALED_FORM.search(_text(medicine.get("dosage_form")))
+            or _INHALED_FORM.search(_text(medicine.get("medicine_name")))):
         return "it is an injectable or inhaled form"
     for name in ingredient_names:
         key = normalize_medication_text(name)

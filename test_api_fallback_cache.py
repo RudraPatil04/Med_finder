@@ -377,16 +377,16 @@ class RxNormFallbackCacheTests(unittest.TestCase):
         self.assertNotIn("savings_percent", undated["reference_price_options"][0])
 
     def _add_medicine(self, name, composition, price=50, form="Capsule", release=None,
-                      checked=None, pack="10 capsules"):
-        key = make_product_key(name, name, "500mg", form, composition, release, pack)
+                      checked=None, pack="10 capsules", strength="500mg"):
+        key = make_product_key(name, name, strength, form, composition, release, pack)
         connection = sqlite3.connect(self.db_path)
         try:
             medicine_id = connection.execute("""INSERT INTO medicines(
                 medicine_name, brand_name, strength, dosage_form, composition, price,
                 release_type, pack_size, composition_complete, price_source,
                 price_checked_at, product_key
-            ) VALUES (?, ?, '500mg', ?, ?, ?, ?, ?, 1, ?, ?, ?)""",
-                (name, name, form, composition, price, release, pack,
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)""",
+                (name, name, strength, form, composition, price, release, pack,
                  "fixture" if checked else None, checked, key)).lastrowid
             for ingredient in parse_composition(composition) or []:
                 connection.execute("""INSERT INTO medicine_ingredients(
@@ -419,6 +419,66 @@ class RxNormFallbackCacheTests(unittest.TestCase):
         self.assertEqual(result["substitutes"], [])
         self.assertEqual(result["unverified_matches"], [])
         self.assertEqual(result["reference_price_options"], [])
+
+    def test_prolonged_release_and_dsr_references_are_not_compared(self):
+        for name in ("Pantoprazole Domperidone Capsule PR", "Pantoprazole Domperidone DSR Capsule"):
+            target = self._add_medicine(name, "Domperidone (30mg) + Pantoprazole (40mg)", strength="30mg")
+            self._add_medicine("Cheap " + name.replace(" PR", "").replace(" DSR", ""),
+                               "Domperidone (30mg) + Pantoprazole (40mg)", price=10, strength="30mg")
+            result = get_substitutes(target)
+            self.assertEqual(result["comparison_status"], "restricted_class", name)
+            self.assertIn("modified-release", result["restricted_class_reason"])
+
+    def test_thyroxine_is_treated_as_narrow_therapeutic_index(self):
+        target = self._add_medicine("Thyro 50mcg Tablet", "Thyroxine (50mcg)", form="Tablet",
+                                    pack="100 tablets", strength="50mcg")
+        self._add_medicine("Other Thyro 50mcg Tablet", "Thyroxine (50mcg)", price=10, form="Tablet",
+                           pack="100 tablets", strength="50mcg")
+        result = get_substitutes(target)
+        self.assertEqual(result["comparison_status"], "restricted_class")
+        self.assertEqual(result["same_composition_options"], [])
+
+    def test_nebuliser_respules_are_not_compared(self):
+        target = self._add_medicine("Budesonide 0.5mg Respules", "Budesonide (0.5mg)", form="Respules",
+                                    pack="5 units", strength="0.5mg")
+        result = get_substitutes(target)
+        self.assertEqual(result["comparison_status"], "restricted_class")
+
+    def test_dispersible_and_vaginal_tablets_do_not_match_plain_tablets(self):
+        kwargs = {"form": "Tablet", "pack": "10 tablets", "strength": "100mg"}
+        plain = self._add_medicine("Clotri 100mg Tablet", "Clotrimazole (100mg)", **kwargs)
+        self._add_medicine("Clotri V 100mg Tablet VT", "Clotrimazole (100mg)", price=10, **kwargs)
+        dispersible = self._add_medicine("Clotri 100mg Tablet DT", "Clotrimazole (100mg)", price=20, **kwargs)
+        self._add_medicine("Other Clotri 100mg Tablet DT", "Clotrimazole (100mg)", price=15, **kwargs)
+        self._add_medicine("Generic Clotri 100mg Tablet", "Clotrimazole (100mg)", price=30, **kwargs)
+
+        plain_names = [item["medicine_name"] for item in get_substitutes(plain)["same_composition_options"]]
+        self.assertEqual(plain_names, ["Generic Clotri 100mg Tablet"])
+        dt_names = [item["medicine_name"] for item in get_substitutes(dispersible)["same_composition_options"]]
+        self.assertEqual(dt_names, ["Other Clotri 100mg Tablet DT"])
+
+    def test_combination_matches_when_strength_column_is_formatted_differently(self):
+        kwargs = {"form": "Tablet", "pack": "10 tablets"}
+        composition = "Ofloxacin (200mg) + Ornidazole (500mg)"
+        target = self._add_medicine("Oflo OZ Tablet", composition, strength="200mg", **kwargs)
+        self._add_medicine("Other OZ 200mg/500mg Tablet", composition, price=20, strength="200mg/500mg", **kwargs)
+        # A strength column that contradicts the product's own composition is not trusted.
+        self._add_medicine("Odd OZ Tablet", composition, price=15, strength="250mg", **kwargs)
+
+        names = [item["medicine_name"] for item in get_substitutes(target)["same_composition_options"]]
+        self.assertEqual(names, ["Other OZ 200mg/500mg Tablet"])
+
+    def test_decimal_strengths_are_not_confused(self):
+        kwargs = {"form": "Tablet", "pack": "10 tablets", "strength": "40mg"}
+        target = self._add_medicine("Telmi H Tablet", "Hydrochlorothiazide (12.5mg) + Telmisartan (40mg)", **kwargs)
+        # The stored strength key reads "125mg" for both 12.5mg and 125mg.
+        self._add_medicine("Wrong Telmi H Tablet", "Hydrochlorothiazide (125mg) + Telmisartan (40mg)",
+                           price=10, **kwargs)
+        self._add_medicine("Right Telmi H Tablet", "Hydrochlorothiazide (12.5mg) + Telmisartan (40mg)",
+                           price=20, **kwargs)
+
+        names = [item["medicine_name"] for item in get_substitutes(target)["same_composition_options"]]
+        self.assertEqual(names, ["Right Telmi H Tablet"])
 
     def test_injectable_reference_is_not_compared(self):
         target = self._add_medicine(
