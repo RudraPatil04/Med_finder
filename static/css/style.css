@@ -729,9 +729,9 @@ p {
 }
 
 .mrp {
+    margin-top: 2px;
     color: var(--muted);
     font-size: 12px;
-    text-decoration: line-through;
 }
 
 .view-pill {
@@ -1900,6 +1900,8 @@ input[type="range"] {
 }
 
 .icon {
+    /* Empty by default: an icon name without its own rule shows nothing, never a filled square. */
+    --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'/%3E");
     display: inline-grid;
     width: 1.2em;
     height: 1.2em;
@@ -1941,7 +1943,11 @@ input[type="range"] {
 .icon-file { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='M6 2h8l4 4v16H6Zm7 1.5V7h3.5Z'/%3E%3C/svg%3E"); }
 .icon-send { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='M2 21 23 12 2 3v7l13 2-13 2Z'/%3E%3C/svg%3E"); }
 .icon-message { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='M4 4h16v12H7l-3 3Zm2 2v8h12V6Z'/%3E%3C/svg%3E"); }
-.icon-twitter, .icon-github, .icon-linkedin, .icon-mail { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='M4 4h16v16H4Z'/%3E%3C/svg%3E"); }
+.icon-shuffle { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' fill-rule='evenodd' d='M7 4 3 8l4 4V9h11V7H7Zm10 8v3H6v2h11v3l4-4Z'/%3E%3C/svg%3E"); }
+.icon-x { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' fill-rule='evenodd' d='M6.4 5 5 6.4 10.6 12 5 17.6 6.4 19l5.6-5.6 5.6 5.6 1.4-1.4-5.6-5.6L19 6.4 17.6 5 12 10.6Z'/%3E%3C/svg%3E"); }
+.icon-package { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' fill-rule='evenodd' d='M12 2 3 6.5v11L12 22l9-4.5v-11Zm0 2.2 6.3 3.1L12 10.5 5.7 7.3ZM5 9l6 3v7.6l-6-3Zm14 0v7.6l-6 3V12Z'/%3E%3C/svg%3E"); }
+.icon-trending-down { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' fill-rule='evenodd' d='M3 7.4 4.4 6l5.6 5.6 3-3 6 6V12h2v7h-7v-2h2.6L13 11.4l-3 3Z'/%3E%3C/svg%3E"); }
+.icon-alert-circle { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' fill-rule='evenodd' d='M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm0 2a8 8 0 1 1 0 16 8 8 0 0 1 0-16Zm-1 3h2v7h-2Zm0 9h2v2h-2Z'/%3E%3C/svg%3E"); }
 
 @keyframes pulse-ring {
     0% { box-shadow: 0 0 0 0 rgba(20, 184, 166, 0.5); }
@@ -2105,10 +2111,22 @@ input[type="range"] {
 
     .result-row {
         align-items: flex-start;
+        flex-wrap: wrap;
+    }
+
+    .result-row > div:nth-child(2) {
+        flex: 1;
+        min-width: 0;
     }
 
     .result-row .price-row {
-        display: none;
+        flex-basis: 100%;
+        margin-left: 82px;
+        text-align: left;
+    }
+
+    .result-row .price {
+        font-size: 18px;
     }
 
     .bubble {
@@ -2734,3 +2752,111 @@ button,
 .more-brands summary { cursor: pointer; padding: 0.6rem 0; }
 .more-brands-hint { color: var(--text-secondary, #64748b); font-size: 0.9em; }
 .more-brands-list { margin: 0.5rem 0 0; padding-left: 1.2rem; line-height: 1.7; }
+
+/* ========================================
+   MEDICINE PICTURES: listing photo or a drawing of the dosage form
+   ======================================== */
+
+.gradient-g {
+    background: linear-gradient(135deg, #94a3b8, #475569);
+}
+
+.med-art {
+    display: grid;
+    place-items: center;
+    width: 84px;
+    height: 84px;
+    border-radius: 24px;
+    background: rgba(255, 255, 255, 0.22);
+    color: #fff;
+}
+
+.med-art svg {
+    width: 58px;
+    height: 58px;
+    filter: drop-shadow(0 4px 8px rgba(15, 23, 42, 0.18));
+}
+
+.medicine-visual.has-photo,
+.medicine-art.has-photo {
+    background: #fff;
+    border-bottom: 1px solid var(--border);
+}
+
+.has-photo .med-art {
+    display: none;
+}
+
+.has-photo .med-photo {
+    visibility: visible;
+}
+
+.med-photo {
+    visibility: hidden;
+    position: absolute;
+    inset: 10px;
+    width: calc(100% - 20px);
+    height: calc(100% - 20px);
+    object-fit: contain;
+}
+
+.has-photo .form-badge {
+    background: rgba(15, 23, 42, 0.6);
+    z-index: 1;
+}
+
+.has-photo .rx-badge {
+    border: 1px solid rgba(225, 29, 72, 0.25);
+    z-index: 1;
+}
+
+.result-row .medicine-visual.has-photo {
+    border: 1px solid var(--border);
+}
+
+.result-row .med-art {
+    width: 48px;
+    height: 48px;
+    border-radius: 14px;
+}
+
+.result-row .med-art svg {
+    width: 34px;
+    height: 34px;
+}
+
+.result-row .med-photo {
+    inset: 4px;
+    width: calc(100% - 8px);
+    height: calc(100% - 8px);
+}
+
+.medicine-art .med-art {
+    width: 140px;
+    height: 140px;
+    border-radius: 36px;
+}
+
+.medicine-art .med-art svg {
+    width: 96px;
+    height: 96px;
+}
+
+.medicine-meta .meta-chip {
+    border-radius: 999px;
+    background: rgba(15, 118, 110, 0.08);
+    color: var(--text);
+    padding: 3px 9px;
+    font-weight: 600;
+}
+
+.detail-visual .medicine-art {
+    width: 100%;
+    max-width: 420px;
+    margin-inline: auto;
+}
+
+.medicine-art.has-photo {
+    border: 1px solid var(--border);
+    border-bottom-width: 1px;
+}

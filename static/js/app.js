@@ -6,14 +6,13 @@
         filtered: [],
         view: "grid",
         category: "All",
-        maxPrice: 1000,
+        maxPrice: Infinity,
         rxOnly: false,
         page: 1,
         pageSize: 12,
         searchRequestId: 0
     };
 
-    const gradients = ["gradient-a", "gradient-b", "gradient-c", "gradient-d", "gradient-e", "gradient-f"];
 
     document.addEventListener("DOMContentLoaded", function () {
         setupNavigation();
@@ -305,8 +304,10 @@
         const maxPrice = document.getElementById("maxPrice");
         const maxPriceLabel = document.getElementById("maxPriceLabel");
         maxPrice.addEventListener("input", function () {
-            state.maxPrice = Number(maxPrice.value);
-            maxPriceLabel.textContent = "Rs. " + state.maxPrice;
+            const value = Number(maxPrice.value);
+            const any = value >= Number(maxPrice.max);
+            state.maxPrice = any ? Infinity : value;
+            maxPriceLabel.textContent = any ? "Any price" : "Up to Rs. " + value;
             filterResults();
         });
 
@@ -534,10 +535,9 @@
 
     function filterResults() {
         state.filtered = state.medicines.filter(function (item) {
-            const category = (item.medicine_category || "").toLowerCase();
             const price = Number(item.price || 0);
             const rx = String(item.prescription_required || "").toLowerCase();
-            const categoryOk = state.category === "All" || category.includes(state.category.toLowerCase());
+            const categoryOk = state.category === "All" || formFamily(item.dosage_form || item.form) === state.category;
             const priceOk = !price || price <= state.maxPrice;
             const rxOk = !state.rxOnly || rx === "true" || rx === "1" || rx.includes("required");
             return categoryOk && priceOk && rxOk;
@@ -557,7 +557,9 @@
         container.dataset.viewMode = state.view;
 
         if (!state.filtered.length) {
-            container.innerHTML = emptyState("No medicines match these filters", "Try a broader search or increase the maximum price.");
+            container.innerHTML = state.medicines.length
+                ? emptyState("No medicines match these filters", "Try another form, or move the price slider to Any price.")
+                : emptyState("No medicines found", "Check the spelling, or search by brand or ingredient.");
             pagination.hidden = true;
             return;
         }
@@ -998,47 +1000,43 @@
         }
     }
 
-    function renderMedicineCard(item, index) {
+    function renderMedicineCard(item) {
         const m = normalizeMedicine(item);
-        const gradient = gradients[(Number(m.id) + (index || 0)) % gradients.length];
         return '<div class="medicine-card-wrapper">' +
             '<a class="medicine-card card-hover" href="/medicine/' + encodeURIComponent(m.id) + '">' +
-            '<div class="medicine-visual ' + gradient + '">' +
-            (m.rx ? '<span class="rx-badge">Rx</span>' : '') +
-            '<span class="form-badge">' + escapeHtml(m.form || "Med") + '</span>' +
-            '<span class="icon icon-pill"></span></div>' +
+            medicineVisual(m, "medicine-visual",
+                (m.rx ? '<span class="rx-badge">Rx</span>' : '') +
+                '<span class="form-badge">' + escapeHtml(m.form || "Medicine") + '</span>') +
             '<div class="medicine-body">' +
             '<small>' + escapeHtml(m.brand) + '</small>' +
             '<h3>' + escapeHtml(m.name) + '</h3>' +
-            '<small>' + escapeHtml(m.manufacturer || "Manufacturer not listed") + '</small>' +
-            '<div class="medicine-meta"><span>' + escapeHtml(categoryLabel(m)) + '</span></div>' +
+            (m.manufacturer ? '<small>' + escapeHtml(m.manufacturer) + '</small>' : '') +
+            '<div class="medicine-meta">' + metaChips(m) + '</div>' +
             '<div class="price-row"><div><div class="price' + (m.price ? '' : ' price-missing') + '">' + priceLabel(m) + '</div><div class="mrp">' + priceProvenance(m) + '</div></div><span class="view-pill">View</span></div>' +
             '</div></a>' +
             '<button class="btn btn-outline btn-compare" type="button" data-compare-id="' + m.id + '" onclick="event.preventDefault(); showComparison(' + m.id + ', \'' + escapeHtml(m.name).replace(/'/g, "\\'") + '\')"><span class="icon icon-shuffle"></span> Compare Prices</button>' +
             '</div>';
     }
 
-    function renderMedicineRow(item, index) {
+    function renderMedicineRow(item) {
         const m = normalizeMedicine(item);
-        const gradient = gradients[(Number(m.id) + (index || 0)) % gradients.length];
         return '<a class="result-row card-hover" href="/medicine/' + encodeURIComponent(m.id) + '">' +
-            '<div class="medicine-visual ' + gradient + '"><span class="icon icon-pill"></span></div>' +
-            '<div><h3>' + escapeHtml(m.name) + '</h3><p>' + escapeHtml(m.brand) + ' | ' + escapeHtml(m.composition || m.category || "Medicine") + '</p></div>' +
-            '<div class="price-row"><div><div class="price">Rs. ' + escapeHtml(formatPrice(m.price)) + '</div><div class="mrp">' + priceProvenance(m) + '</div></div></div>' +
+            medicineVisual(m, "medicine-visual", "") +
+            '<div><h3>' + escapeHtml(m.name) + '</h3><p>' + escapeHtml([m.brand, m.strength, m.packSize].filter(Boolean).join(" · ")) + '</p></div>' +
+            '<div class="price-row"><div><div class="price' + (m.price ? '' : ' price-missing') + '">' + priceLabel(m) + '</div><div class="mrp">' + priceProvenance(m) + '</div></div></div>' +
             '</a>';
     }
 
     function renderMedicineDetail(item) {
         const m = normalizeMedicine(item);
-        const gradient = gradients[Number(m.id) % gradients.length];
         return '<section class="panel glass detail-visual">' +
-            '<div class="medicine-art ' + gradient + '"><span class="icon icon-pill"></span>' + (m.rx ? '<span class="rx-badge">Prescription</span>' : '') + '</div>' +
-            '<div class="detail-price-panel"><div class="price">Rs. ' + escapeHtml(formatPrice(m.price)) + '</div><div class="mrp">' + priceProvenance(m) + '</div></div>' +
+            medicineVisual(m, "medicine-art", m.rx ? '<span class="rx-badge">Prescription</span>' : '') +
+            '<div class="detail-price-panel"><div class="price' + (m.price ? '' : ' price-missing') + '">' + priceLabel(m) + '</div><div class="mrp">' + priceProvenance(m) + '</div></div>' +
             '</section>' +
             '<section><article class="panel surface-only detail-copy">' +
             '<div class="badge-row"><span class="badge">' + escapeHtml(m.category || "Medicine") + '</span><span class="badge secondary">' + escapeHtml(m.form || "Form") + '</span>' +
             (m.apiSource ? '<span class="badge secondary">Live catalog record</span>' : '') + '</div>' +
-            '<h1>' + escapeHtml(m.name) + '</h1><p class="subline">' + escapeHtml(m.brand || "Brand") + ' | by ' + escapeHtml(m.manufacturer || "MED FINDER") + '</p>' +
+            '<h1>' + escapeHtml(m.name) + '</h1><p class="subline">' + escapeHtml(m.brand || "Brand") + (m.manufacturer ? ' | by ' + escapeHtml(m.manufacturer) : '') + '</p>' +
             (m.apiSource ? '<p class="subline">Added from the ' + escapeHtml(m.apiSource) + '.' + (Number(m.price) > 0 ? ' The price shown is the live listing price from that catalog.' : ' No price is recorded for this product.') + '</p>' : '') +
             '<dl class="field-grid"><div><dt>Strength</dt><dd>' + escapeHtml(m.strength || "-") + '</dd></div><div><dt>Form</dt><dd>' + escapeHtml(m.form || "-") + '</dd></div><div><dt>Composition</dt><dd>' + escapeHtml(m.composition || "-") + '</dd></div></dl>' +
             '</article>' +
@@ -1162,13 +1160,10 @@
             packSize: item.pack_size || "",
             releaseType: item.release_type || "",
             category: item.medicine_category || item.category || "",
+            imageUrl: item.image_url || "",
             apiSource: item.api_source || "",
             rx: String(item.prescription_required || item.rx || "").toLowerCase() === "true" || String(item.prescription_required || "").includes("Required")
         };
-    }
-
-    function categoryLabel(medicine) {
-        return medicine.category === "External" ? "US catalog only" : (medicine.category || "Medicine");
     }
 
     function priceLabel(medicine) {
@@ -1181,11 +1176,93 @@
                 ? "Not listed in the Indian catalog"
                 : "No price recorded";
         }
+        const source = String(medicine.priceSource || "");
+        const label = /pharmeasy/i.test(source) ? "PharmEasy price"
+            : /aushadhi|pmbjp/i.test(source) ? "Jan Aushadhi price"
+            : "Catalog price";
         const date = medicine.priceCheckedAt ? new Date(medicine.priceCheckedAt) : null;
-        const dateLabel = date && !Number.isNaN(date.getTime())
-            ? "Checked " + dateFormatter.format(date)
-            : "update date unknown";
-        return escapeHtml((medicine.priceSource || "Listed price") + " · " + dateLabel);
+        return date && !Number.isNaN(date.getTime())
+            ? escapeHtml(label + " · checked " + dateFormatter.format(date))
+            : escapeHtml(label + " (date unknown)");
+    }
+
+    // ---- Medicine pictures -------------------------------------------------
+    // A real product photo only when the catalog row carries its own image URL.
+    // Otherwise a drawing of the dosage form. Never a stock photo of another product.
+    const SHARED_PLACEHOLDER_IMAGE = "hx2gxivwmeoxxxsc1hix";
+
+    function formFamily(form) {
+        const f = String(form || "").toLowerCase();
+        if (/inhaler|respule|rotacap|spray|nebul/.test(f)) return "inhaler";
+        if (/injection|infusion|vial|syringe|\bpen\b/.test(f)) return "injection";
+        if (/drop/.test(f)) return "drops";
+        if (/capsule|softgel/.test(f)) return "capsule";
+        if (/tablet|lozenge|pastille/.test(f)) return "tablet";
+        if (/syrup|suspension|solution|liquid|elixir|linctus|mouthwash|emulsion/.test(f)) return "liquid";
+        if (/cream|gel|ointment|lotion|soap|shampoo|paste|balm|serum|wash/.test(f)) return "topical";
+        if (/powder|sachet|granule/.test(f)) return "powder";
+        return "other";
+    }
+
+    const FORM_GRADIENT = {
+        tablet: "gradient-b", capsule: "gradient-e", liquid: "gradient-d", injection: "gradient-c",
+        drops: "gradient-a", topical: "gradient-f", inhaler: "gradient-g", powder: "gradient-d", other: "gradient-a"
+    };
+
+    const SHADE = "rgba(15,23,42,0.18)";
+    const FORM_ART = {
+        tablet: '<circle cx="26" cy="28" r="15" fill="currentColor"/><path d="M15 28h22" stroke="' + SHADE + '" stroke-width="2.5" stroke-linecap="round"/>' +
+            '<circle cx="44" cy="44" r="11" fill="currentColor" opacity=".75"/><path d="M36.5 36.5l15 15" stroke="' + SHADE + '" stroke-width="2.5" stroke-linecap="round"/>',
+        capsule: '<g transform="rotate(-40 32 32)"><rect x="10" y="22" width="44" height="20" rx="10" fill="currentColor" opacity=".55"/>' +
+            '<path d="M20 22h12v20H20a10 10 0 0 1 0-20Z" fill="currentColor"/></g>',
+        liquid: '<rect x="25" y="6" width="14" height="7" rx="2" fill="currentColor"/>' +
+            '<path d="M24 13h16v5l6 7v29a4 4 0 0 1-4 4H22a4 4 0 0 1-4-4V25l6-7Z" fill="currentColor"/>' +
+            '<rect x="22" y="31" width="20" height="15" rx="2" fill="' + SHADE + '"/>',
+        injection: '<g transform="rotate(45 32 32)"><rect x="26" y="14" width="12" height="28" rx="2" fill="currentColor"/>' +
+            '<rect x="21" y="10" width="22" height="4" rx="2" fill="currentColor"/><rect x="30" y="3" width="4" height="7" fill="currentColor"/>' +
+            '<rect x="30.5" y="42" width="3" height="5" fill="currentColor"/><rect x="31.3" y="47" width="1.4" height="12" fill="currentColor"/>' +
+            '<path d="M28 22h4M28 28h4M28 34h4" stroke="' + SHADE + '" stroke-width="2"/></g>',
+        drops: '<path d="M32 6S15 27 15 39a17 17 0 0 0 34 0C49 27 32 6 32 6Z" fill="currentColor"/>' +
+            '<path d="M23 40a9 9 0 0 0 9 9" stroke="' + SHADE + '" stroke-width="3" fill="none" stroke-linecap="round"/>',
+        topical: '<g transform="rotate(-30 32 32)"><path d="M19 14h26l-4 33H23Z" fill="currentColor"/>' +
+            '<rect x="17" y="9" width="30" height="5" rx="1.5" fill="currentColor" opacity=".7"/>' +
+            '<rect x="27" y="47" width="10" height="9" rx="2" fill="currentColor" opacity=".8"/>' +
+            '<rect x="25" y="23" width="14" height="12" rx="2" fill="' + SHADE + '"/></g>',
+        inhaler: '<path d="M26 6h12a3 3 0 0 1 3 3v27H23V9a3 3 0 0 1 3-3Z" fill="currentColor"/>' +
+            '<path d="M16 36h28a3 3 0 0 1 3 3v13a3 3 0 0 1-3 3H19a3 3 0 0 1-3-3Z" fill="currentColor" opacity=".8"/>' +
+            '<rect x="47" y="40" width="10" height="11" rx="2" fill="currentColor" opacity=".6"/>',
+        powder: '<rect x="16" y="8" width="32" height="48" rx="3" fill="currentColor"/>' +
+            '<path d="M16 15h32M16 49h32" stroke="' + SHADE + '" stroke-width="2" stroke-dasharray="3 3"/>' +
+            '<circle cx="32" cy="32" r="7" fill="' + SHADE + '"/>'
+    };
+    FORM_ART.other = FORM_ART.capsule;
+
+    function photoUrl(medicine) {
+        const url = String(medicine.imageUrl || "");
+        return /^https:\/\//.test(url) && url.indexOf(SHARED_PLACEHOLDER_IMAGE) === -1 ? url : "";
+    }
+
+    function medicineVisual(medicine, className, badges) {
+        const family = formFamily(medicine.form);
+        const photo = photoUrl(medicine);
+        // The drawing stays until the photo has actually loaded, so a slow or blocked image never leaves a blank box.
+        return '<div class="' + className + ' ' + FORM_GRADIENT[family] + '">' +
+            badges +
+            '<span class="med-art" aria-hidden="true"><svg viewBox="0 0 64 64">' + FORM_ART[family] + '</svg></span>' +
+            (photo ? '<img class="med-photo" src="' + escapeHtml(photo) + '" alt="" loading="lazy" referrerpolicy="no-referrer"' +
+                ' onload="this.parentNode.classList.add(\'has-photo\')" onerror="this.remove()">' : '') +
+            '</div>';
+    }
+
+    const ROUTE_LABEL = {
+        "oral": "By mouth", "oral liquid": "By mouth", "injectable": "Injection", "topical": "On skin",
+        "respiratory": "Inhaled", "external": "US catalog only"
+    };
+
+    function metaChips(medicine) {
+        const route = ROUTE_LABEL[String(medicine.category || "").toLowerCase()];
+        return [medicine.strength, medicine.packSize, route].filter(Boolean)
+            .map((text) => '<span class="meta-chip">' + escapeHtml(text) + '</span>').join("");
     }
 
     function infoCard(title, icon, items) {
@@ -1541,7 +1618,7 @@
                 '<p class="disclaimer">These records are shown for review only. A match does not establish that products can be substituted. Prices below may be old dataset listings.</p>' +
                 '<div class="substitutes-list">' + matches.map(function (item) {
                     const priceLabel = Number(item.price || 0) > 0
-                        ? 'Catalog price: Rs. ' + formatPrice(item.price) + ' · ' + priceProvenance(normalizeMedicine(item))
+                        ? 'Rs. ' + formatPrice(item.price) + ' · ' + priceProvenance(normalizeMedicine(item))
                         : 'No catalog price';
                     return '<article class="comparison-item substitute unverified-match">' +
                         '<div class="comparison-header"><div class="flex-grow"><h4>' + escapeHtml(item.medicine_name) + '</h4>' +

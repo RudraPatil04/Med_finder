@@ -20,20 +20,20 @@
         <aside class="filters panel surface-only">
             <h2><span class="icon icon-sliders"></span> Filters</h2>
             <div class="filter-group">
-                <p class="eyebrow">Category</p>
+                <p class="eyebrow">Form</p>
                 <div class="chip-group" id="categoryFilters">
                     <button class="active" type="button" data-category="All">All</button>
-                    <button type="button" data-category="Pain Relief">Pain Relief</button>
-                    <button type="button" data-category="Antibiotic">Antibiotic</button>
-                    <button type="button" data-category="Diabetes">Diabetes</button>
-                    <button type="button" data-category="Cardiac">Cardiac</button>
-                    <button type="button" data-category="Allergy">Allergy</button>
-                    <button type="button" data-category="Gastro">Gastro</button>
+                    <button type="button" data-category="tablet">Tablet</button>
+                    <button type="button" data-category="capsule">Capsule</button>
+                    <button type="button" data-category="liquid">Syrup</button>
+                    <button type="button" data-category="injection">Injection</button>
+                    <button type="button" data-category="drops">Drops</button>
+                    <button type="button" data-category="topical">Cream / gel</button>
                 </div>
             </div>
             <div class="filter-group">
-                <div class="range-label"><label class="eyebrow" for="maxPrice">Max price</label><strong id="maxPriceLabel">Rs. 1000</strong></div>
-                <input id="maxPrice" type="range" min="10" max="5000" value="1000" aria-describedby="maxPriceLabel">
+                <div class="range-label"><label class="eyebrow" for="maxPrice">Max price</label><strong id="maxPriceLabel">Any price</strong></div>
+                <input id="maxPrice" type="range" min="10" max="5000" step="10" value="5000" aria-describedby="maxPriceLabel">
             </div>
             <label class="check-row">
                 <input id="rxOnly" type="checkbox">
@@ -53,7 +53,7 @@
                 <div class="empty-state panel surface-only">
                     <span class="feature-icon"><span class="icon icon-search"></span></span>
                     <h2>Start with a medicine, brand, or composition</h2>
-                    <p>Search results will appear here with price, brand, category, and prescription details.</p>
+                    <p>Results show the price, pack size and form of each product.</p>
                 </div>
             </div>
             <nav class="pagination" id="pagination" aria-label="Search result pages" hidden>
