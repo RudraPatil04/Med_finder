@@ -10,6 +10,7 @@ from flask import Blueprint, jsonify, request
 
 from backend.services.medicine_service import (
     search_medicines,
+    search_medicines_detailed,
     suggest_functional_medicines,
     get_medicine,
     search_by_brand,
@@ -56,11 +57,15 @@ def search():
             "message": "Search keyword is required."
         }), 400
 
+    # exact=1 searches the words as typed, without spelling correction.
+    exact = request.args.get("exact", "").strip() == "1"
+
     pop_issues()
-    medicines = search_medicines(keyword)
-    rows = [dict(row) for row in medicines]
+    result = search_medicines_detailed(keyword, allow_correction=not exact)
+    rows = [dict(row) for row in result["rows"]]
+    corrected = result.get("corrected_query")
     ingredient, related = related_by_ingredient(rows)
-    notice = build_notice(keyword, rows, pop_issues(), ingredient, related)
+    notice = build_notice(corrected or keyword, rows, pop_issues(), ingredient, related)
 
     return jsonify({
         "success": True,
@@ -68,6 +73,10 @@ def search():
         "data": rows,
         "notice": notice,
         "related": related,
+        # Set when nothing matched the typed words and a corrected spelling was
+        # searched instead; the page must say so.
+        "corrected_query": corrected,
+        "original_query": keyword,
     })
 
 

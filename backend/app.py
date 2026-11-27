@@ -128,6 +128,13 @@ def info():
 # ============================================================
 
 if __name__ == "__main__":
+    # Build the spelling/ranking vocabulary (~1 s) before the first search
+    # needs it. Debug mode's reloader runs this in its watcher process too,
+    # which is harmless.
+    import threading
+    from backend.services.search_ranking import warm_up
+    threading.Thread(target=warm_up, daemon=True).start()
+
     app.run(
         host="127.0.0.1",
         port=5000,

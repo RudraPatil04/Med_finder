@@ -1230,3 +1230,43 @@ models were out of free quota and `gemini-flash-lite-latest` reads these photos 
 Rows added to the real DB by the live lookups: Ranbaxy ORS, 7 celecoxib 200 mg products,
 Vonalong 10/20, Vitazyme capsule/drops, Enzabil, Pantakind variants incl. Pantakind Raft. Misread
 lookups during testing (Sevelamer "Sevent", Pneumovax, Lycozon) were deleted. 111 offline tests pass.
+
+## Update — search accuracy (2026-11-27)
+
+Measured with `python -m eval.search_eval all` (local search only, no API fallback, nothing
+written). Original 72-query set from 2026-11-26; held-out 51-query set written before any change.
+
+| Set | Before top-1 / top-3 | After top-1 / top-3 |
+|---|---|---|
+| Original 72 | 53 (73.6%) / 56 (77.8%) | 70 (97.2%) / 70 (97.2%) |
+| Held-out 51 | 37 (72.5%) / 38 (74.5%) | 49 (96.1%) / 49 (96.1%) |
+
+What changed:
+- `backend/services/search_ranking.py` (new): query parsing (`pan40`/`Telma-40` -> `pan 40`;
+  `B12` stays glued), Python ranking of candidate rows (exact name words > name starts with the
+  words > brand equal > first word prefix > word later in name > substring; any tier whose
+  strength does not match drops by 5; strength is read from the name *or* the strength column),
+  family size (number of catalog names using the first word) breaks ties among partial matches,
+  and spelling correction (rapidfuzz ratio >= 80, same first letter, weighted by product count,
+  threshold 90).
+- `medicine_service`: generic-ingredient path only when the query *is* an ingredient (exact,
+  salt-stripped, synonym such as amoxicillin->amoxycillin, or >= 80% of one ingredient name).
+  Brand stems (`Atorva`, `Telma`) now take the name path. `_record_ingredient_keys` no longer
+  invents an ingredient from an Indian brand name (only RxNorm "10 MG" / " / " names), so
+  Ondem/Metrogyl return all their rows.
+- `search_medicines_detailed(..., allow_correction=True)` is used by `/api/search`; it returns
+  `corrected_query` and the page says "No exact match for X. Showing results for Y" with a
+  "Search only for X" button (`exact=1`). `search_medicines` (OCR, assistant) never corrects.
+- Data: `etl/add_listed_brands.py --apply Zincovit Digene "Liv 52" "Neurobion Forte" Electral`
+  saved 37 PharmEasy listings (ids 348260-348296). Electral and the Neurobion Forte injection
+  carry compositions; Zincovit, Digene, Liv 52 and the Neurobion Forte tablet are search-only
+  rows (`composition NULL`, `composition_complete 0`) because PharmEasy lists no composition.
+  Backup before the insert: `database/medfinder.before-listed-brands-20261127.db`.
+
+Caveats:
+- 5 of the 17 original-set gains are data (the added brands), not code. Code alone: 65/72.
+- Eval rule change: brand checks now treat `-` as a space (`Montair-LC` = `Montair LC`).
+- Remaining misses: `Dol` (top is the real brand "Dol 80"), `Combi` (Combikit ranks over
+  Combiflam), `Hifen` (real brand "Hifen 250"), `Brufin` (no confident correction).
+- A misspelling of a missing brand can be corrected to a look-alike product; the banner and the
+  exact-search button are the guard. Threshold 90 keeps `Electral` from becoming `Electril`.

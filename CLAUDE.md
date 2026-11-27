@@ -114,7 +114,7 @@ source CSV), `etl/import_jan_aushadhi.py --pdf … --edition 2025 --edition-date
 Tests (unittest, offline, 83 focused tests):
 `test_search_suggestions`, `test_api_fallback_cache`, `test_prescription_ocr`,
 `test_drug_catalog_client`, `test_backfill_compositions`, `test_repair_ingredient_prefixes`,
-`test_drugsetu_enrichment`. `test_api_fallback.py` and `test_clean.py` contain 0 test cases.
+`test_drugsetu_enrichment`, `test_search_ranking`. `test_api_fallback.py` and `test_clean.py` contain 0 test cases.
 
 ## Problems to fix, in priority order
 
@@ -141,7 +141,8 @@ Tests (unittest, offline, 83 focused tests):
 6. **Composition gap.** 77,435 rows are incomplete; the backfill fills ~78% of sampled rows at
    ~2.3 s/row (about 49 hours for the whole pool) and needs the source CSV. Enrichment is
    currently on-demand only (DrugSetu key was a 100-request trial and is exhausted).
-7. **Suggestions are prefix-only.** `metformin` suggests nothing because seeds/queries match
+7. **Suggestions are prefix-only.** (Search itself measured 97.2% / 96.1% top-1 on the
+   72-query and 51-query held-out sets on 2026-11-27: `python -m eval.search_eval all`.) `metformin` suggests nothing because seeds/queries match
    name and brand, never ingredients; the starter list is fixed at 8 brands.
 8. **Loose ends in the UI.** Footer "Resources"/"Legal" links point at `/`, the hero voice
    button has no handler, the disease page updates without a live region.
@@ -170,5 +171,5 @@ Tests (unittest, offline, 83 focused tests):
   `backend/services/medicine_service.py`.
 - Windows: console encoding needs UTF-8 (`etl` scripts force it); SQLite handles are closed in
   `finally` in `backend/database.py` so temp-DB tests can clean up.
-- Static asset versions live in `templates/base.html` (`v=20261115-8`); bump them when editing
+- Static asset versions live in `templates/base.html` (`v=20261127-1`); bump them when editing
   `static/js/app.js` or `static/css/style.css`.

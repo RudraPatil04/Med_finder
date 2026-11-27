@@ -346,7 +346,7 @@
         filterResults();
     }
 
-    async function runSearch(query) {
+    async function runSearch(query, exact) {
         const container = document.getElementById("searchResults");
         const count = document.getElementById("resultCount");
         if (!query) {
@@ -357,9 +357,10 @@
         container.innerHTML = skeletonCards(6);
         count.textContent = "Searching…";
         const requestId = ++state.searchRequestId;
-        const data = await fetchJson("/api/search?q=" + encodeURIComponent(query));
+        const data = await fetchJson("/api/search?q=" + encodeURIComponent(query) + (exact ? "&exact=1" : ""));
         // Ignore older responses when a user types a more specific query quickly.
         if (requestId !== state.searchRequestId) return;
+        renderSearchCorrection(data && data.corrected_query, query);
         if (!data || !data.success) {
             container.innerHTML = emptyState("No results found", "Try a medicine name, brand, or composition.");
             count.textContent = "0 results";
@@ -370,6 +371,25 @@
         renderSearchNotice(data.notice, data.related);
         filterResults();
         loadCheaperAlternatives(data.data[0], requestId);
+    }
+
+    // A misspelled search is retried with catalog spelling. Say plainly which
+    // words were searched: a look-alike name can be a different medicine.
+    function renderSearchCorrection(corrected, original) {
+        const box = document.getElementById("searchCorrection");
+        if (!box) return;
+        if (!corrected) {
+            box.hidden = true;
+            box.innerHTML = "";
+            return;
+        }
+        box.innerHTML = 'No exact match for <strong>' + escapeHtml(original) + '</strong>. Showing results for <strong>' +
+            escapeHtml(corrected) + '</strong>; check the name matches your prescription. ' +
+            '<button type="button" class="link-button" data-exact-search>Search only for "' + escapeHtml(original) + '"</button>';
+        box.hidden = false;
+        box.querySelector("[data-exact-search]").addEventListener("click", function () {
+            runSearch(original, true);
+        });
     }
 
     // Explains why a search has no price / no match, and lists same-ingredient

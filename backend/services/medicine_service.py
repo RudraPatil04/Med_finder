@@ -23,6 +23,9 @@ from backend.services.external_api_service import search_rxnorm, save_api_medici
 from backend.medicine_data import (
     normalize_medication_text, pack_quantity, parse_composition, restricted_reason,
 )
+from backend.services.search_ranking import (
+    Query, best_tier, correct_query, generic_ingredient, rank_records,
+)
 
 
 SEARCH_CACHE_VERSION = "catalog-v2"
@@ -59,6 +62,13 @@ def _record_ingredient_keys(record):
     has_rxnorm_combo_separator = bool(re.search(r"\s/\s", name))
     if parsed and not (len(parsed) == 1 and has_rxnorm_combo_separator):
         return [item["ingredient_name_norm"] for item in parsed]
+    # Only RxNorm spells names as "ingredient 10 MG Oral Tablet" (spaced,
+    # upper-case unit). An Indian brand row without a composition ("Ondem 4mg
+    # Tablet") must not have its brand guessed as an ingredient: that guess
+    # made brand searches keep only the guessed rows.
+    if not (has_rxnorm_combo_separator
+            or re.search(r"\d\s+(?:MG|MCG|ML|UNT|MEQ)\b", name)):
+        return []
 
     # RxNorm product names commonly use "ingredient strength / ingredient strength".
     parts = re.split(r"\s+/\s+", name)
@@ -79,6 +89,8 @@ def _record_ingredient_keys(record):
 def _filter_single_ingredient_search(keyword, records):
     """When a generic ingredient is searched, omit products containing extra actives."""
     key = _search_ingredient_key(keyword)
+    if key:
+        key = _generic_key(keyword) or key
     if not key:
         return records
     parsed = [(record, _record_ingredient_keys(record)) for record in records]
@@ -346,24 +358,77 @@ SEARCH_COLUMNS = """
 """
 
 
+def _generic_key(keyword):
+    """The stored ingredient a generic query names ("Paracetamol 500"), or None."""
+    return generic_ingredient(_search_ingredient_key(keyword))
+
+
 def _search_local(keyword, limit):
+    """Search local rows. Generic ingredient queries keep the ingredient path;
+    everything else is ranked by how well the product name matches."""
+    if _generic_key(keyword):
+        return _search_local_generic(keyword, limit)
+    return _search_local_names(keyword, limit)
+
+
+def _search_local_names(keyword, limit, candidates=400):
+    query = Query(keyword)
+    conditions = ["medicine_name LIKE ?", "brand_name LIKE ?"]
+    params = [f"%{keyword}%", f"%{keyword}%"]
+    norm_keyword = normalize_medication_text(keyword)
+    if norm_keyword:
+        conditions.append("search_norm LIKE ?")
+        params.append(f"%{norm_keyword}%")
+    if query.spaced.casefold() != keyword.casefold():
+        conditions.append("medicine_name LIKE ?")      # "pan40" -> "pan 40"
+        params.append(f"%{query.spaced}%")
+    text = query.text
+    if text and text != keyword.casefold():
+        # "Amlong 5" names "AMlong Tablet" (strength 5mg): match the name words
+        # at a word start and let ranking check the strength.
+        conditions.append(
+            "(medicine_name LIKE ? OR medicine_name LIKE ? OR medicine_name LIKE ? OR brand_name LIKE ?)"
+        )
+        params += [f"{text}%", f"% {text}%", f"%-{text}%", f"{text}%"]
+    rough_text = text or keyword
+    sql = f"""
+    SELECT {SEARCH_COLUMNS}
+    FROM medicines
+    WHERE {" OR ".join(conditions)}
+    ORDER BY
+        CASE WHEN ? <> '' AND medicine_name LIKE ? THEN 0 ELSE 1 END,
+        CASE
+            WHEN lower(trim(medicine_name)) = lower(?) THEN 0
+            WHEN medicine_name LIKE ? OR medicine_name LIKE ? THEN 1
+            WHEN medicine_name LIKE ? THEN 2
+            WHEN brand_name LIKE ? THEN 3
+            ELSE 4
+        END,
+        medicine_name
+    LIMIT ?
+    """
+    # Rows naming both the words and the strength ("Himalaya Liv.52") must
+    # survive the candidate limit, whatever their alphabetical place.
+    params += [query.number or "", f"%{rough_text}%{query.number or ''}%"]
+    params += [rough_text, f"{rough_text} %", f"{rough_text}-%", f"{rough_text}%",
+               f"{rough_text}%", candidates]
+    rows = execute_query(sql, tuple(params))
+    return rank_records(query, rows)[:limit]
+
+
+def _search_local_generic(keyword, limit):
     keyword_pattern = f"%{keyword}%"
     norm_keyword = normalize_medication_text(keyword)
     norm_pattern = f"%{norm_keyword}%" if norm_keyword else keyword_pattern
-    prefix_pattern = f"{keyword}%"
 
     # A generic ingredient is rarely part of the product name ("Voveran" is not
     # "Diclofenac"), so also match the structured ingredient list. Only
     # single-ingredient products are matched here; combination products are
     # dropped later for generic searches anyway and would crowd the page.
-    ingredient_key = _search_ingredient_key(keyword)
-    strength_pattern = _search_strength_pattern(keyword) if ingredient_key else None
-    ingredient_condition = ""
-    ingredient_params = ()
-    form_order = ""
-    if ingredient_key:
-        strength_condition = " AND i.ingredient_strength_norm GLOB ?" if strength_pattern else ""
-        ingredient_condition = f"""
+    ingredient_key = _generic_key(keyword)
+    strength_pattern = _search_strength_pattern(keyword)
+    strength_condition = " AND i.ingredient_strength_norm GLOB ?" if strength_pattern else ""
+    ingredient_condition = f"""
         OR medicines.id IN (
             SELECT i.medicine_id
             FROM medicine_ingredients i
@@ -372,9 +437,9 @@ def _search_local(keyword, limit):
                    FROM medicine_ingredients j
                    WHERE j.medicine_id = i.medicine_id) = 1
         )"""
-        ingredient_params = ((f"{ingredient_key}%", strength_pattern) if strength_pattern
-                             else (f"{ingredient_key}%",))
-        form_order = """,
+    ingredient_params = ((f"{ingredient_key}%", strength_pattern) if strength_pattern
+                         else (f"{ingredient_key}%",))
+    form_order = """,
         CASE lower(coalesce(dosage_form, ''))
             WHEN 'tablet' THEN 0
             WHEN 'capsule' THEN 1
@@ -388,27 +453,16 @@ def _search_local(keyword, limit):
             ELSE 9
         END"""
 
-    if ingredient_key:
-        # For a generic ingredient query the name-prefix matches are incidental
-        # ("Diclofenac Sodium Injection" for "Diclofenac"); let form ordering rank
-        # them so tablets lead. Exact name/brand matches still come first.
-        rank_sql = """
+    # For a generic ingredient query the name-prefix matches are incidental
+    # ("Diclofenac Sodium Injection" for "Diclofenac"); let form ordering rank
+    # them so tablets lead. Exact name/brand matches still come first.
+    rank_sql = """
         CASE
             WHEN lower(trim(medicine_name)) = lower(trim(?)) THEN 0
             WHEN lower(trim(brand_name)) = lower(trim(?)) THEN 1
             ELSE 2
         END"""
-        rank_params = (keyword, keyword)
-    else:
-        rank_sql = """
-        CASE
-            WHEN lower(trim(medicine_name)) = lower(trim(?)) THEN 0
-            WHEN lower(trim(brand_name)) = lower(trim(?)) THEN 1
-            WHEN lower(medicine_name) LIKE lower(?) THEN 2
-            WHEN lower(brand_name) LIKE lower(?) THEN 3
-            ELSE 4
-        END"""
-        rank_params = (keyword, keyword, prefix_pattern, prefix_pattern)
+    rank_params = (keyword, keyword)
 
     query = f"""
     SELECT {SEARCH_COLUMNS}
@@ -440,6 +494,44 @@ def _cache_result(cache_key, result_count):
         record_api_search(cache_key, result_count)
     except Exception as e:
         print(f"Could not cache API search: {e}")
+
+
+def _local_results(keyword, limit):
+    return _dedupe_search_records(
+        _filter_single_ingredient_search(keyword, _search_local(keyword, limit * 3))
+    )[:limit]
+
+
+def search_medicines_detailed(keyword, limit=20, enable_api_fallback=True, allow_correction=False):
+    """Search like `search_medicines`, and say when a misspelling was corrected.
+
+    Returns {"rows": [...], "corrected_query": str | None}. With
+    `allow_correction`, a query that finds nothing (or only loose substring
+    matches) is retried once with catalog words for its misspelled words; the
+    corrected rows are used only if they match better, and the caller must
+    show the user which query was actually searched.
+    """
+    keyword = (keyword or "").strip()
+    ensure_catalog_schema()
+    rows = _local_results(keyword, limit)
+    if allow_correction and keyword:
+        query = Query(keyword)
+        tier = None if (not rows or _generic_key(keyword)) else best_tier(query, rows)
+        if not rows or (tier is not None and tier >= 4):
+            try:
+                corrected = correct_query(query)
+            except Exception as error:
+                print(f"Spelling correction unavailable: {error}")
+                corrected = None
+            if corrected and corrected.casefold() != keyword.casefold():
+                corrected_rows = _local_results(corrected, limit)
+                corrected_tier = (0 if _generic_key(corrected)
+                                  else best_tier(Query(corrected), corrected_rows))
+                if corrected_rows and (not rows or corrected_tier < tier):
+                    return {"rows": corrected_rows, "corrected_query": corrected}
+    if rows or not enable_api_fallback:
+        return {"rows": rows, "corrected_query": None}
+    return {"rows": search_medicines(keyword, limit, enable_api_fallback), "corrected_query": None}
 
 
 def search_medicines(keyword, limit=20, enable_api_fallback=True):
