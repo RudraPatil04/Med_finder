@@ -1243,7 +1243,7 @@
     }
 
     function photoTag(photo) {
-        return '<img class="med-photo" src="' + escapeHtml(photo) + '" alt="" loading="lazy" referrerpolicy="no-referrer"' +
+        return '<img class="med-photo" src="' + escapeHtml(photo) + '" alt="" decoding="async" referrerpolicy="no-referrer"' +
             ' onload="this.parentNode.classList.add(\'has-photo\')" onerror="this.remove()">';
     }
 

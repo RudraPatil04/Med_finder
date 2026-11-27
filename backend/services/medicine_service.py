@@ -694,17 +694,36 @@ def search_by_category(category):
 # Cheapest Medicines
 # ============================================================
 
+_CHEAPEST_CACHE = {}
+_CHEAPEST_TTL_SECONDS = 600
+
+
 def cheapest_medicines(limit=20):
+    """Low-priced products for the home and empty search pages.
+
+    Only rows that can be shown properly: a price above the Rs. 1 placeholders,
+    a complete composition and a real product photo (not 1mg's shared
+    placeholder). The scan takes about 1.5 s, so the list is cached briefly.
+    """
+    cached = _CHEAPEST_CACHE.get(limit)
+    if cached and time.monotonic() - cached[0] < _CHEAPEST_TTL_SECONDS:
+        return cached[1]
 
     query = """
     SELECT *
     FROM medicines
-    WHERE price IS NOT NULL
+    WHERE price > 1
+      AND composition_complete = 1
+      AND image_url LIKE 'https://%'
+      AND image_url NOT LIKE '%hx2gxivwmeoxxxsc1hix%'
     ORDER BY price ASC
     LIMIT ?
     """
 
-    return execute_query(query, (limit,))
+    rows = execute_query(query, (limit,))
+    if rows:
+        _CHEAPEST_CACHE[limit] = (time.monotonic(), rows)
+    return rows
 
 
 # ============================================================
