@@ -1355,33 +1355,19 @@
         const liveApiData = responses[1];
         const livePriceData = responses[2];
         const renderLiveApiMatches = function () {
-            // Restricted classes list nothing; a failed lookup is hidden when other listings exist.
+            // Restricted classes list nothing; failures and empty results stay quiet when other listings exist.
             if (liveApiData && liveApiData.restricted) return '';
-            if (!liveApiData || liveApiData.success === false) {
-                if (hasOtherListings()) return '';
-                return '<section class="comparison-section live-api-section"><h3>Live catalog lookup</h3><p class="disclaimer">The live medicine catalog could not be checked right now. Try again later.</p></section>';
-            }
-            const matches = Array.isArray(liveApiData.matches) ? liveApiData.matches : [];
-            if (!matches.length) {
-                if (hasOtherListings()) return '';
-                return '<section class="comparison-section live-api-section"><h3>Live catalog lookup</h3><p>' + escapeHtml(liveApiData.message || 'No live catalog products with the same composition were found.') + '</p><small>Source: ' + escapeHtml(liveApiData.source || 'India medicine catalog') + '</small></section>';
-            }
+            const matches = liveApiData && Array.isArray(liveApiData.matches) ? liveApiData.matches : [];
+            if (!matches.length) return '';
             return '<section class="comparison-section live-api-section">' +
-                '<h3>Live catalog products with the same composition <span class="count-badge">' + matches.length + '</span></h3>' +
-                '<p class="disclaimer">These products list the same ingredients, strength and form in the live catalog. The catalog does not confirm therapeutic equivalence or give current prices.</p>' +
-                '<div class="substitutes-list">' + matches.map(function (item) {
-                    return '<article class="comparison-item substitute unverified-match">' +
-                        '<div class="comparison-header"><div class="flex-grow"><h4>' + escapeHtml(item.medicine_name || 'Catalog medicine') + '</h4>' +
-                        '<p>' + escapeHtml(item.manufacturer || item.brand_name || '') + '</p></div></div>' +
-                        '<div class="comparison-details">' +
-                        '<span class="badge">' + escapeHtml(item.dosage_form || 'Form unavailable') + '</span>' +
-                        (item.pack_size ? '<span class="badge">' + escapeHtml(item.pack_size) + '</span>' : '') +
-                        '<span class="comparison-source">Recorded composition: ' + escapeHtml(item.composition || 'Composition unavailable') + '</span>' +
-                        '<span class="badge secondary">Price not provided by this catalog</span>' +
-                        '</div><p class="verification-gaps">' + escapeHtml(item.verification_note || item.classification || 'Therapeutic equivalence is not confirmed.') + '</p>' +
-                        (item.source_url ? '<div class="comparison-actions"><a class="btn btn-outline btn-sm" href="' + escapeHtml(item.source_url) + '" target="_blank" rel="noopener noreferrer">View source record</a></div>' : '') +
-                        '</article>';
-                }).join('') + '</div><small>Source: ' + escapeHtml(liveApiData.source || 'India medicine catalog') + '</small></section>';
+                '<details class="more-brands">' +
+                '<summary><strong>' + matches.length + ' more brands with the same ingredients</strong> <span class="more-brands-hint">(no price available)</span></summary>' +
+                '<p class="disclaimer">Same ingredients and strength. Ask your doctor or pharmacist before switching.</p>' +
+                '<ul class="more-brands-list">' + matches.map(function (item) {
+                    return '<li><strong>' + escapeHtml(item.medicine_name || 'Catalog medicine') + '</strong>' +
+                        (item.manufacturer ? ' · ' + escapeHtml(item.manufacturer) : '') +
+                        (item.pack_size ? ' · ' + escapeHtml(item.pack_size) : '') + '</li>';
+                }).join('') + '</ul></details></section>';
         };
         const renderLivePriceMatches = function () {
             if (livePriceData && livePriceData.restricted) return '';
@@ -1396,7 +1382,9 @@
             return '<section class="comparison-section live-price-section">' +
                 '<h3>' + (hasSavingsComparison ? 'Cheaper same-ingredient listings' : 'Current same-ingredient listings') +
                 ' <span class="count-badge">' + listings.length + '</span></h3>' +
-                '<p>' + escapeHtml(livePriceData.message || '') + '</p>' +
+                '<p class="disclaimer">' + (hasSavingsComparison
+                    ? 'Live PharmEasy prices, same ingredients, strength and pack.'
+                    : 'Live PharmEasy prices. Same ingredients and strength, but savings are not confirmed.') + '</p>' +
                 (hasSavingsComparison ? '<p><strong>Reference listing:</strong> ' + escapeHtml(reference.medicine_name) +
                     ' · Rs. ' + formatPrice(reference.price) + ' · ' + escapeHtml(reference.pack_size || 'Pack unknown') + '</p>' : '') +
                 '<div class="substitutes-list">' + listings.map(function (item) {
@@ -1588,7 +1576,7 @@
                                     : "No verified alternatives found";
             const listedWithoutVerifiedSavings = title === "Same-ingredient options (savings not verified)";
             const explanation = listedWithoutVerifiedSavings
-                ? "The products below list the same ingredients, strength and form, but none has a current, pack-matched price comparison with this medicine, so no saving is claimed. Confirm with your doctor or pharmacist before switching."
+                ? "Same ingredients and strength. Savings not confirmed. Ask your doctor or pharmacist before switching."
                 : data && data.message
                 ? data.message
                 : "No product-specific verified alternatives with recent comparable prices are available.";

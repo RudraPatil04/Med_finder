@@ -2729,3 +2729,8 @@ button,
         scroll-behavior: auto !important;
     }
 }
+
+/* Collapsed list of unpriced same-ingredient brands in the Alternatives popup */
+.more-brands summary { cursor: pointer; padding: 0.6rem 0; }
+.more-brands-hint { color: var(--text-secondary, #64748b); font-size: 0.9em; }
+.more-brands-list { margin: 0.5rem 0 0; padding-left: 1.2rem; line-height: 1.7; }
