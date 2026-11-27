@@ -1919,7 +1919,7 @@ input[type="range"] {
     -webkit-mask: var(--icon) center / contain no-repeat;
 }
 
-.icon-pill { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='M4.2 14.9 14.9 4.2a5 5 0 0 1 7.1 7.1L11.3 22a5 5 0 0 1-7.1-7.1Zm2.1 2.1a2 2 0 0 0 2.8 2.8l4.3-4.3-2.8-2.8Zm6.4-6.4 2.8 2.8 4.3-4.3A2 2 0 1 0 17 6.3Z'/%3E%3C/svg%3E"); }
+.icon-pill { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='M4.2 14.9 14.9 4.2a5 5 0 0 1 7.1 7.1L11.3 22a5 5 0 0 1-7.1-7.1ZM12.7 10.6l2.8 2.8 4.3-4.3A2 2 0 1 0 17 6.3Z'/%3E%3C/svg%3E"); }
 .icon-search { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='m21 19-5.2-5.2a7 7 0 1 0-2 2L19 21ZM5 10a5 5 0 1 1 10 0A5 5 0 0 1 5 10Z'/%3E%3C/svg%3E"); }
 .icon-sparkles { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='m12 2 1.8 5.2L19 9l-5.2 1.8L12 16l-1.8-5.2L5 9l5.2-1.8Zm6 10 1 3 3 1-3 1-1 3-1-3-3-1 3-1ZM5 14l.8 2.2L8 17l-2.2.8L5 20l-.8-2.2L2 17l2.2-.8Z'/%3E%3C/svg%3E"); }
 .icon-mic { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='M12 14a4 4 0 0 0 4-4V6a4 4 0 1 0-8 0v4a4 4 0 0 0 4 4Zm7-4a7 7 0 0 1-14 0H3a9 9 0 0 0 8 8.94V22h2v-3.06A9 9 0 0 0 21 10Z'/%3E%3C/svg%3E"); }
