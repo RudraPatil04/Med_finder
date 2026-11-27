@@ -15,10 +15,6 @@ from backend.services.external_api_service import lookup_rxnorm_ingredient
 
 RELATED_LIMIT = 5
 
-CAUTION = (
-    "Same ingredient does not mean same medicine or dose. "
-    "Confirm with a doctor or pharmacist before using or switching."
-)
 
 
 def _is_unpriced_foreign(row):
@@ -64,41 +60,36 @@ def build_notice(keyword, medicines, issues, ingredient=None, related=None):
 
     if not medicines:
         if "cached_miss" in issues:
-            return {"kind": "recently_searched", "message": (
-                f"\"{keyword}\" was searched a short while ago and nothing was found. "
-                "To avoid overloading the online catalogs, a repeat lookup is paused for "
-                "up to a day. Try the generic (ingredient) name or check the spelling.")}
+            return {"kind": "recently_searched", "title": "No match found", "message": (
+                f"\"{keyword}\" was searched recently and nothing was found. "
+                "Check the spelling or try the ingredient name.")}
         unreachable = [i for i in issues if i != "cached_miss"]
         if unreachable:
-            return {"kind": "lookup_incomplete", "message": (
-                "Some online catalogs could not be reached (" + ", ".join(unreachable) +
-                "), so this search may be incomplete. Please try again in a moment.")}
-        return {"kind": "not_found", "message": (
-            f"No match for \"{keyword}\" in the local catalog, the India drug catalog, "
-            "PharmEasy or RxNorm. Check the spelling, or try the generic name or ingredient. "
-            "A pharmacist can also confirm what is sold under that name.")}
+            return {"kind": "lookup_incomplete", "title": "Search may be incomplete", "message": (
+                "Could not reach " + ", ".join(unreachable) + ". Please try again in a moment.")}
+        return {"kind": "not_found", "title": "No match found", "message": (
+            f"Nothing found for \"{keyword}\". Check the spelling or try the ingredient name. "
+            "A pharmacist can tell you what is sold under that name.")}
 
     if any(_is_unpriced_foreign(m) for m in medicines):
-        text = ("This result comes only from the US RxNorm drug database. It has no Indian "
-                "price and no verified composition, so it cannot be compared and may not be "
-                "sold in India.")
+        # Short on purpose: no Indian price, cannot compare, may not be sold in India, ask a professional.
+        text = ("Showing US database (RxNorm) results. No Indian price, so no comparison, "
+                "and it may not be sold in India.")
         if ingredient and related:
-            text += (f" Indian-catalog products whose only ingredient is {ingredient} "
-                     f"are listed below. {CAUTION}")
+            text += (f" Indian products with only {ingredient} are listed below. "
+                     "Same ingredient does not mean same medicine or dose.")
         elif ingredient:
-            text += (f" Its active ingredient is {ingredient}, but no priced single-ingredient "
-                     "Indian product with that ingredient was found.")
-        text += " Ask a doctor or pharmacist about what is available locally."
-        return {"kind": "no_indian_price", "message": text,
-                "ingredient": ingredient}
+            text += f" No priced Indian product with {ingredient} was found."
+        text += " Ask your doctor or pharmacist."
+        return {"kind": "no_indian_price", "title": "Not found in Indian catalog",
+                "message": text, "ingredient": ingredient}
 
     if any(not m.get("price") for m in medicines):
-        return {"kind": "some_prices_missing", "message": (
-            "Some results have no recorded price, so they are not included in any price comparison.")}
+        return {"kind": "some_prices_missing", "title": "Some prices missing", "message": (
+            "Results without a price are left out of comparisons.")}
 
     unreachable = [i for i in issues if i != "cached_miss"]
     if unreachable:
-        return {"kind": "lookup_incomplete", "message": (
-            "Some online catalogs could not be reached (" + ", ".join(unreachable) +
-            "), so these results may be incomplete.")}
+        return {"kind": "lookup_incomplete", "title": "Results may be incomplete", "message": (
+            "Could not reach " + ", ".join(unreachable) + ".")}
     return None

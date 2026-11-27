@@ -403,12 +403,12 @@
             box.innerHTML = "";
             return;
         }
-        let html = '<strong>Please note</strong><p>' + escapeHtml(notice.message) + '</p>';
+        let html = '<strong>' + escapeHtml(notice.title || "Please note") + '</strong><p>' + escapeHtml(notice.message) + '</p>';
         if (related && related.length) {
             html += '<ul class="notice-related">' + related.map(function (r) {
                 return '<li><a href="/medicine/' + encodeURIComponent(r.id) + '">' + escapeHtml(r.medicine_name) + '</a> · ' +
                     escapeHtml([r.strength, r.dosage_form].filter(Boolean).join(" · ")) +
-                    ' · Rs. ' + escapeHtml(formatPrice(r.price)) + ' (catalog price, unverified)</li>';
+                    ' · Rs. ' + escapeHtml(formatPrice(r.price)) + ' (catalog price)</li>';
             }).join("") + '</ul>';
         }
         box.innerHTML = html;
@@ -461,14 +461,14 @@
                     ? 'No recorded price for this medicine'
                     : referencePriceCurrent ? 'No cheaper current listing found' : 'Current price not confirmed';
         const blurb = priceKnown
-            ? 'Same recorded ingredients and strength, with current listing prices on both sides. These are catalog matches, not verified as therapeutically interchangeable.'
+            ? 'Same ingredients and strength, both prices checked recently. Not proven interchangeable: ask your doctor or pharmacist.'
             : estimated
-                ? 'These products have the same recorded ingredients, strength and form. Estimated savings compare recorded catalog prices per unit; those prices are not confirmed as current, so check the price at your pharmacy. Not verified as interchangeable - confirm with a doctor or pharmacist.'
+                ? 'Same ingredients, strength and form. Savings are estimates from old catalog prices; check at your pharmacy. Ask your doctor or pharmacist before switching.'
             : referencePriceMissing
-                ? 'This medicine has no recorded price, so these are the cheapest catalog products with the same recorded ingredients, strength and form. Their prices are unverified; confirm with a pharmacist.'
+                ? 'No price for this medicine. These have the same ingredients, strength and form, at old catalog prices. Ask your doctor or pharmacist.'
                 : referencePriceCurrent
-                    ? 'This price is a current listing, but no same-composition product with a current listing price is cheaper. The options below carry old, unverified catalog prices, so no saving is claimed.'
-                    : 'The price recorded for this medicine is an old catalog price, not a confirmed current listing, so no saving is claimed. These products share the recorded ingredients, strength and form; their catalog prices are unverified and they are not verified interchangeable.';
+                    ? 'No cheaper current price found. The options below have old catalog prices, so no saving is claimed.'
+                    : 'Same ingredients, strength and form. Prices are old catalog prices, so no saving is claimed. Ask your doctor or pharmacist before switching.';
         const items = priceKnown ? cheaper : options;
         const catalogHtml = !items.length ? '' : '<div class="cheaper-head">' +
             '<div><p class="eyebrow">' + eyebrow + '</p>' +
@@ -499,7 +499,7 @@
         // difference is shown only when the list and this brand's price are both current.
         const referenceHtml = !referenceOptions.length ? '' : '<div class="cheaper-reference">' +
             '<p class="eyebrow">Jan Aushadhi list price</p>' +
-            '<p class="cheaper-reference-note">Published generic list price for a product with the same recorded ingredients, strength and form. It is not a listing of this brand, and it does not show that the products can be substituted.</p>' +
+            '<p class="cheaper-reference-note">Government generic price for the same ingredients and strength. Not this brand, and not proof they can be swapped.</p>' +
             '<div class="cheaper-list">' + referenceOptions.slice(0, 3).map(function (item) {
                 const unit = item.unit || 'unit';
                 const unitLabel = item.price_per_unit
@@ -1500,7 +1500,7 @@
             if (!referenceOptions.length) return '';
             return '<section class="comparison-section reference-price-section">' +
                 '<h3>Jan Aushadhi list price for the same composition <span class="count-badge">' + referenceOptions.length + '</span></h3>' +
-                '<p class="disclaimer">A published generic list price for products with the same recorded ingredients, strength and form. It prices a generic product, not this brand, and does not show that the products can be substituted.</p>' +
+                '<p class="disclaimer">Government generic price for the same ingredients and strength. Not this brand, and not proof they can be swapped.</p>' +
                 '<div class="substitutes-list">' + referenceOptions.map(function (item) {
                     const unit = item.unit || 'unit';
                     const unitLabel = item.price_per_unit
@@ -1540,7 +1540,7 @@
             if (!sameComposition.length) return '';
             return '<section class="comparison-section same-composition-section">' +
                 '<h3>Cheaper same-composition options <span class="count-badge">' + sameComposition.length + '</span></h3>' +
-                '<p class="disclaimer">Same recorded active ingredients and strength, with current listing prices on both sides. These are catalog matches, not verified therapeutic equivalents; prices are compared per unit when pack sizes differ.</p>' +
+                '<p class="disclaimer">Same ingredients and strength, recent prices, compared per tablet or unit. Ask your doctor or pharmacist before switching.</p>' +
                 '<div class="substitutes-list">' + sameComposition.map(function (item, idx) {
                     const percent = Number(item.savings_percent || 0);
                     const unit = item.price_per_unit_value
@@ -1574,15 +1574,15 @@
         const renderSameCompositionOptions = function () {
             if (!sameOptions.length) return '';
             const noClaimNote = data && !data.reference_price_available
-                ? 'This product has no recorded price, so no cheaper-than-reference saving can be claimed.'
+                ? 'No price for this product, so no saving is claimed.'
                 : data && data.reference_price_is_current
-                    ? 'This price is a current listing, but no same-composition product with a current listing price is cheaper, so no saving is claimed.'
+                    ? 'No cheaper current price found, so no saving is claimed.'
                         : sameOptions.some(function (item) { return Number(item.estimated_savings_percent || 0) > 0; })
-                        ? 'The recorded prices are not confirmed current listings, so savings shown are estimates from catalog prices per unit; check the price at your pharmacy.'
-                        : 'The recorded price for this product is not a confirmed current listing, so no saving is claimed.';
+                        ? 'Savings are estimates from old catalog prices; check at your pharmacy.'
+                        : 'Prices are old catalog prices, so no saving is claimed.';
             return '<section class="comparison-section same-composition-section">' +
                 '<h3>Same-composition catalog options <span class="count-badge">' + sameOptions.length + '</span></h3>' +
-                '<p class="disclaimer">' + noClaimNote + ' These catalog products share the recorded active ingredients, strength and form; their catalog prices are unverified and they are not verified therapeutic equivalents.</p>' +
+                '<p class="disclaimer">' + noClaimNote + ' Same ingredients, strength and form. Ask your doctor or pharmacist before switching.</p>' +
                 '<div class="substitutes-list">' + sameOptions.map(function (item, idx) {
                     const unit = item.price_per_unit_value
                         ? 'Rs. ' + formatUnitPrice(item.price_per_unit_value) + ' per unit'
@@ -1615,7 +1615,7 @@
             if (!matches.length) return '';
             return '<section class="comparison-section unverified-section">' +
                 '<h3>Same-ingredient catalog matches <span class="count-badge">' + Number(data.potential_match_count || matches.length) + '</span></h3>' +
-                '<p class="disclaimer">These records are shown for review only. A match does not establish that products can be substituted. Prices below may be old dataset listings.</p>' +
+                '<p class="disclaimer">For reference only. Prices may be old. Ask your doctor or pharmacist before switching.</p>' +
                 '<div class="substitutes-list">' + matches.map(function (item) {
                     const priceLabel = Number(item.price || 0) > 0
                         ? 'Rs. ' + formatPrice(item.price) + ' · ' + priceProvenance(normalizeMedicine(item))
@@ -1740,7 +1740,7 @@
             '</div>' +
             '</div>' +
             '<div class="comparison-footer">' +
-            '<p class="disclaimer"><span class="icon icon-alert-circle"></span> Evidence and recent price checks are shown for each verified result. Ask a pharmacist or prescriber before changing treatment.</p>' +
+            '<p class="disclaimer"><span class="icon icon-alert-circle"></span> Ask your doctor or pharmacist before changing medicines.</p>' +
             '</div>' + renderSameComposition() + renderSameCompositionOptions() + renderReferencePrices() + renderUnverifiedMatches(unverifiedMatches) + renderLivePriceMatches() + renderLiveApiMatches();
     };
 
