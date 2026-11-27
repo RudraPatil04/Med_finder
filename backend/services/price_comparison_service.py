@@ -1,6 +1,7 @@
 """Request-time, composition- and pack-matched PharmEasy price comparison."""
 
 import json
+import logging
 import re
 from datetime import datetime, timezone
 
@@ -8,6 +9,8 @@ import requests
 from bs4 import BeautifulSoup
 
 from backend.medicine_data import extract_release_type, normalize_medication_text, parse_composition
+
+logger = logging.getLogger(__name__)
 
 PHARMEASY_SEARCH_URL = "https://pharmeasy.in/search/all"
 PHARMEASY_TIMEOUT_SECONDS = 10
@@ -254,8 +257,9 @@ def compare_current_prices(medicine, limit=10):
         catalog = _search_payload(ingredient_query)
         reference_items = catalog if normalize_medication_text(reference_query) == normalize_medication_text(ingredient_query) else _search_payload(reference_query)
     except (requests.RequestException, ValueError, TypeError) as exc:
+        logger.warning("Live pharmacy price lookup failed: %s", exc)
         return {"success": False, "comparison_available": False, "reference": None, "matches": [],
-                "message": f"Live pharmacy pricing is temporarily unavailable ({type(exc).__name__})."}
+                "message": "Live pharmacy prices are unavailable right now."}
 
     expected_release = str(medicine.get("release_type") or "").casefold()
     reference_item = _pick_reference_item(reference_items, medicine, signature, expected_release)

@@ -688,49 +688,43 @@ class RxNormFallbackCacheTests(unittest.TestCase):
         self.assertEqual(result["substitutes"], [])
 
     def test_live_india_api_returns_only_structured_same_strength_form_matches(self):
-        payload = {"total": 2, "results": [
-            {
-                "medicineSctid": "prod-20", "medicineName": "Example Atorvastatin 20 mg tablet",
-                "brand.brandName": "Example", "manufacturer.manufacturerName": "Example Pharma",
-                "generic.sctid": "generic-20", "licenseStatus": "UNKNOWN",
-                "genericDetail": {
-                    "name": "Atorvastatin (as atorvastatin calcium) 20 mg oral tablet",
-                    "doseForm": "Oral tablet", "routeOfAdministration": "Oral route",
-                    "lastUpdatedOn": "2026-03-10", "synonyms": ["conventional release oral tablet"],
-                    "composition": [{"substanceName": "Atorvastatin calcium", "strength": "20/1", "unit": "milligram/Tablet"}],
-                },
-            },
-            {
-                "medicineSctid": "prod-40", "medicineName": "Example Atorvastatin 40 mg tablet",
-                "generic.sctid": "generic-40", "genericDetail": {
-                    "name": "Atorvastatin 40 mg oral tablet", "doseForm": "Oral tablet",
-                    "composition": [{"substanceName": "Atorvastatin", "strength": "40/1", "unit": "milligram/Tablet"}],
-                },
-            },
-            {
-                "medicineSctid": "prod-combo", "medicineName": "Combination tablet",
-                "genericDetail": {
-                    "name": "Atorvastatin 20 mg and Amlodipine 5 mg oral tablet",
-                    "doseForm": "Oral tablet", "composition": [
-                        {"substanceName": "Atorvastatin calcium", "strength": "20/1", "unit": "milligram/Tablet"},
-                        {"substanceName": "Amlodipine besylate", "strength": "5/1", "unit": "milligram/Tablet"},
-                    ],
-                },
-            },
+        def record(pid, name, composition, form="Tablet"):
+            return {"product_id": pid, "name": name, "composition": composition, "dosage_form": form,
+                    "manufacturer": "Example Pharma", "packaging": "strip of 10 tablets", "mrp": 50.0}
+        payload = {"products": 5, "results": [
+            record("p20", "Example 20 Tablet", "Atorvastatin (20mg)"),
+            record("p40", "Example 40 Tablet", "Atorvastatin (40mg)"),
+            record("combo", "Combo Tablet", "Atorvastatin (20mg) + Amlodipine (5mg)"),
+            record("cap", "Example 20 Capsule", "Atorvastatin (20mg)", form="Capsule"),
+            record("sr", "Example 20 SR Tablet", "Atorvastatin (20mg)"),
+            record("self", "Reference 20 Tablet", "Atorvastatin (20mg)"),
         ]}
         response = Mock()
         response.json.return_value = payload
         with patch.object(india_medicine_api.requests, "get", return_value=response) as api_call:
             result = india_medicine_api.search_live_alternatives({
+                "medicine_name": "Reference 20 Tablet",
                 "composition": "Atorvastatin (20mg)", "dosage_form": "Tablet", "release_type": None,
             }, limit=5)
 
         api_call.assert_called_once()
-        self.assertEqual(api_call.call_args.kwargs["params"]["q"], "Atorvastatin 20 mg oral tablet")
-        self.assertEqual([m["medicine_name"] for m in result["matches"]], ["Example Atorvastatin 20 mg tablet"])
-        self.assertEqual(result["matches"][0]["release_characteristics"], "Conventional release")
+        self.assertTrue(api_call.call_args.args[0].endswith("/v1/search"))
+        self.assertEqual(api_call.call_args.kwargs["params"]["q"], "Atorvastatin 20mg")
+        self.assertEqual([m["medicine_name"] for m in result["matches"]], ["Example 20 Tablet"])
+        self.assertEqual(result["matches"][0]["pack_size"], "10 tablets")
         self.assertIsNone(result["matches"][0]["price"])
         self.assertIn("equivalence not confirmed", result["matches"][0]["classification"])
+
+    def test_live_india_api_failure_message_hides_exception_names(self):
+        response = Mock()
+        response.json.side_effect = ValueError("Expecting value: line 1 column 1 (char 0)")
+        with patch.object(india_medicine_api.requests, "get", return_value=response):
+            result = india_medicine_api.search_live_alternatives({
+                "composition": "Atorvastatin (20mg)", "dosage_form": "Tablet",
+            })
+        self.assertFalse(result["success"])
+        self.assertNotIn("Error", result["message"])
+        self.assertNotIn("(", result["message"])
 
     def test_price_comparison_requires_exact_ingredients_form_and_pack(self):
         def product(product_id, name, strength, pack, price, brand, ingredients=None):

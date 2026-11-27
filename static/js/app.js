@@ -1234,6 +1234,16 @@
     const priceFormatter = new Intl.NumberFormat("en-IN", { maximumFractionDigits: 2 });
     const unitPriceFormatter = new Intl.NumberFormat("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     const dateFormatter = new Intl.DateTimeFormat("en-IN", { day: "numeric", month: "short", year: "numeric" });
+    const istDateTimeFormatter = new Intl.DateTimeFormat("en-IN", {
+        day: "numeric", month: "short", year: "numeric", hour: "numeric", minute: "2-digit", timeZone: "Asia/Kolkata"
+    });
+
+    // "2026-11-27T07:59:54+00:00" -> "27 Nov 2026, 1:29 pm IST"
+    function formatCheckedAt(value) {
+        if (!value) return "just now";
+        const parsed = new Date(value);
+        return Number.isNaN(parsed.getTime()) ? "recently" : istDateTimeFormatter.format(parsed) + " IST";
+    }
 
     function formatPrice(value) {
         const number = Number(value || 0);
@@ -1345,31 +1355,40 @@
         const liveApiData = responses[1];
         const livePriceData = responses[2];
         const renderLiveApiMatches = function () {
-            if (!liveApiData) return '<section class="comparison-section live-api-section"><h3>Live India API lookup</h3><p class="disclaimer">The live medicine information API could not be reached. Try again later.</p></section>';
+            // Restricted classes list nothing; a failed lookup is hidden when other listings exist.
+            if (liveApiData && liveApiData.restricted) return '';
+            if (!liveApiData || liveApiData.success === false) {
+                if (hasOtherListings()) return '';
+                return '<section class="comparison-section live-api-section"><h3>Live catalog lookup</h3><p class="disclaimer">The live medicine catalog could not be checked right now. Try again later.</p></section>';
+            }
             const matches = Array.isArray(liveApiData.matches) ? liveApiData.matches : [];
-            if (!matches.length) return '<section class="comparison-section live-api-section"><h3>Live India API lookup</h3><p>' + escapeHtml(liveApiData.message || 'No structured live catalog matches were returned.') + '</p><small>Source: ' + escapeHtml(liveApiData.source || 'India medicine API') + '</small></section>';
+            if (!matches.length) {
+                if (hasOtherListings()) return '';
+                return '<section class="comparison-section live-api-section"><h3>Live catalog lookup</h3><p>' + escapeHtml(liveApiData.message || 'No live catalog products with the same composition were found.') + '</p><small>Source: ' + escapeHtml(liveApiData.source || 'India medicine catalog') + '</small></section>';
+            }
             return '<section class="comparison-section live-api-section">' +
-                '<h3>Live India API catalog matches <span class="count-badge">' + matches.length + '</span></h3>' +
-                '<p class="disclaimer">These products share recorded ingredient, strength and form details in the live catalog. The API does not confirm product-level therapeutic equivalence or provide current prices.</p>' +
+                '<h3>Live catalog products with the same composition <span class="count-badge">' + matches.length + '</span></h3>' +
+                '<p class="disclaimer">These products list the same ingredients, strength and form in the live catalog. The catalog does not confirm therapeutic equivalence or give current prices.</p>' +
                 '<div class="substitutes-list">' + matches.map(function (item) {
                     return '<article class="comparison-item substitute unverified-match">' +
                         '<div class="comparison-header"><div class="flex-grow"><h4>' + escapeHtml(item.medicine_name || 'Catalog medicine') + '</h4>' +
                         '<p>' + escapeHtml(item.manufacturer || item.brand_name || '') + '</p></div></div>' +
                         '<div class="comparison-details">' +
                         '<span class="badge">' + escapeHtml(item.dosage_form || 'Form unavailable') + '</span>' +
-                        '<span class="comparison-source">Recorded generic: ' + escapeHtml(item.composition || 'Composition unavailable') + '</span>' +
-                        '<span class="badge secondary">' + escapeHtml(item.release_characteristics || 'Release data unavailable') + '</span>' +
-                        '<span class="badge secondary">' + escapeHtml(item.route || 'Route unavailable') + '</span>' +
-                        '<span class="badge">Price unavailable from this API</span>' +
-                        '<span class="comparison-source">License status: ' + escapeHtml(item.license_status || 'Not stated') + '</span>' +
-                        '<span class="comparison-source">Catalog updated: ' + escapeHtml(item.product_updated_at || 'Date unknown') + '</span>' +
+                        (item.pack_size ? '<span class="badge">' + escapeHtml(item.pack_size) + '</span>' : '') +
+                        '<span class="comparison-source">Recorded composition: ' + escapeHtml(item.composition || 'Composition unavailable') + '</span>' +
+                        '<span class="badge secondary">Price not provided by this catalog</span>' +
                         '</div><p class="verification-gaps">' + escapeHtml(item.verification_note || item.classification || 'Therapeutic equivalence is not confirmed.') + '</p>' +
-                        '<div class="comparison-actions"><a class="btn btn-outline btn-sm" href="' + escapeHtml(item.source_url) + '" target="_blank" rel="noopener noreferrer">View source record</a></div>' +
+                        (item.source_url ? '<div class="comparison-actions"><a class="btn btn-outline btn-sm" href="' + escapeHtml(item.source_url) + '" target="_blank" rel="noopener noreferrer">View source record</a></div>' : '') +
                         '</article>';
-                }).join('') + '</div><small>Source: ' + escapeHtml(liveApiData.source || 'India medicine API') + '</small></section>';
+                }).join('') + '</div><small>Source: ' + escapeHtml(liveApiData.source || 'India medicine catalog') + '</small></section>';
         };
         const renderLivePriceMatches = function () {
-            if (!livePriceData) return '<section class="comparison-section live-price-section"><h3>Live price comparison</h3><p>Current pharmacy prices could not be loaded.</p></section>';
+            if (livePriceData && livePriceData.restricted) return '';
+            if (!livePriceData || livePriceData.success === false) {
+                if (hasOtherListings()) return '';
+                return '<section class="comparison-section live-price-section"><h3>Live price comparison</h3><p>Current pharmacy prices could not be loaded right now. Try again later.</p></section>';
+            }
             const listings = Array.isArray(livePriceData.matches) ? livePriceData.matches : [];
             if (!listings.length) return '<section class="comparison-section live-price-section"><h3>Live price comparison</h3><p>' + escapeHtml(livePriceData.message || 'No comparable current listings were found.') + '</p></section>';
             const hasSavingsComparison = Boolean(livePriceData.comparison_available && livePriceData.reference);
@@ -1389,7 +1408,7 @@
                         '</div></div>' +
                         '<div class="comparison-details"><span class="badge">' + escapeHtml(item.pack_size || 'Pack unknown') + '</span>' +
                         (item.price_per_unit ? '<span class="badge secondary">' + escapeHtml(item.price_per_unit) + '</span>' : '') +
-                        '<span class="comparison-source">' + escapeHtml(item.source || 'Pharmacy') + ' · checked ' + escapeHtml(item.checked_at || livePriceData.checked_at || 'just now') + '</span>' +
+                        '<span class="comparison-source">' + escapeHtml(item.source || 'Pharmacy') + ' · checked ' + escapeHtml(formatCheckedAt(item.checked_at || livePriceData.checked_at)) + '</span>' +
                         (item.source_url ? '<a class="comparison-source" href="' + escapeHtml(item.source_url) + '" target="_blank" rel="noopener noreferrer">View listing</a>' : '') +
                         '</div></article>';
                 }).join('') + '</div></section>';
@@ -1403,6 +1422,15 @@
         }) : [];
         const sameIds = new Set(sameComposition.map(function (item) { return String(item.id); }));
         const optionIds = new Set(sameOptions.map(function (item) { return String(item.id); }));
+        const visibleUnverifiedCount = unverifiedMatches.filter(function (item) {
+            return !sameIds.has(String(item.id)) && !optionIds.has(String(item.id));
+        }).length;
+        const liveListingCount = (livePriceData && !livePriceData.restricted && Array.isArray(livePriceData.matches) ? livePriceData.matches.length : 0) +
+            (liveApiData && !liveApiData.restricted && Array.isArray(liveApiData.matches) ? liveApiData.matches.length : 0);
+        function hasOtherListings() {
+            return Boolean(sameComposition.length || sameOptions.length || referenceOptions.length ||
+                visibleUnverifiedCount || liveListingCount);
+        }
         const renderReferencePrices = function () {
             if (!referenceOptions.length) return '';
             return '<section class="comparison-section reference-price-section">' +
@@ -1555,8 +1583,13 @@
                             ? "Same-composition catalog options"
                             : data && data.comparison_status === "reference_pack_unknown"
                                 ? "Same-composition catalog options"
-                                : "No verified alternatives found";
-            const explanation = data && data.message
+                                : hasOtherListings()
+                                    ? "Same-ingredient options (savings not verified)"
+                                    : "No verified alternatives found";
+            const listedWithoutVerifiedSavings = title === "Same-ingredient options (savings not verified)";
+            const explanation = listedWithoutVerifiedSavings
+                ? "The products below list the same ingredients, strength and form, but none has a current, pack-matched price comparison with this medicine, so no saving is claimed. Confirm with your doctor or pharmacist before switching."
+                : data && data.message
                 ? data.message
                 : "No product-specific verified alternatives with recent comparable prices are available.";
             const sameHtml = renderSameComposition() + renderSameCompositionOptions() + renderReferencePrices();
@@ -1565,7 +1598,7 @@
                 '<h3>' + escapeHtml(title) + '</h3>' +
                 '<p>' + escapeHtml(explanation) + '</p>' +
                 '</div>';
-            body.innerHTML = emptyHtml + sameHtml + renderUnverifiedMatches(unverifiedMatches) + renderLiveApiMatches() + renderLivePriceMatches();
+            body.innerHTML = emptyHtml + sameHtml + renderUnverifiedMatches(unverifiedMatches) + renderLivePriceMatches() + renderLiveApiMatches();
             return;
         }
 
@@ -1643,7 +1676,7 @@
             '</div>' +
             '<div class="comparison-footer">' +
             '<p class="disclaimer"><span class="icon icon-alert-circle"></span> Evidence and recent price checks are shown for each verified result. Ask a pharmacist or prescriber before changing treatment.</p>' +
-            '</div>' + renderSameComposition() + renderSameCompositionOptions() + renderReferencePrices() + renderUnverifiedMatches(unverifiedMatches) + renderLiveApiMatches() + renderLivePriceMatches();
+            '</div>' + renderSameComposition() + renderSameCompositionOptions() + renderReferencePrices() + renderUnverifiedMatches(unverifiedMatches) + renderLivePriceMatches() + renderLiveApiMatches();
     };
 
     window.closeComparison = function() {
