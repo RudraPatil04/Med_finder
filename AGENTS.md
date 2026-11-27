@@ -1315,3 +1315,23 @@ Caveats:
   price-ranked one. `Azithral 200 Liquid` has no dosage form and gets nothing.
 - Missing composition (Zincovit, Digene, Neurobion Forte tablet, Betnovate, Moxicip): no
   alternatives at all, as designed.
+
+## 2026-11-27 — Real product photos on demand; Rs. 1 placeholder prices cleared
+
+Photos: `backend/services/image_lookup.py` finds the PharmEasy listing of the exact same product
+(brand or title prefix, no extra words in the title, same ingredient+strength signature, same form,
+same release type) and stores its photo in `medicines.image_url`. Placeholder, reused and non-PharmEasy
+URLs are rejected. The UI asks `GET /api/medicine-images?ids=…` (≤24 ids, 5 s budget) after rendering
+any card that has no photo; attempts are cached as `image:<id>` (hit 365 d, miss 7 d), and request
+errors start a 15-minute cooldown. Live price lookups also store the matched listing's photo.
+`etl/prefill_images.py --apply` pre-fills the top 12 results of every eval query plus the fresh-priced
+demo set, one PharmEasy search per brand.
+
+Measured (`python -m eval.image_coverage`, 100 queries, first 12 cards): 51.5% of cards had a real
+photo before, 53.0% after the batch; top result 66% both times. The batch stopped at the 151st
+PharmEasy search (HTTP 405) having stored 9 photos from 417 rows. Most missing photos belong to
+long-tail brands PharmEasy does not list, or lists without a photo; the matching is not the limit.
+
+Prices: `etl/clear_placeholder_prices.py --apply` set 61 source-dataset prices of exactly Rs. 1 to NULL
+(same-composition products cost a median 11x more); old values are in `placeholder_prices`,
+`--restore` puts them back. Re-run after `etl/build_database.py`.

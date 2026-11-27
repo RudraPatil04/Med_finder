@@ -22,6 +22,7 @@ from backend.recommendation_service import PRICE_MAX_AGE_DAYS, get_substitutes
 from backend.services.api_cache import (
     ensure_api_search_cache, has_recent_api_search, record_api_search,
 )
+from backend.services.image_lookup import _clean_listing_image, has_real_image, record_attempt, store_image
 from backend.services.price_comparison_service import find_reference_listing
 
 LIVE_PRICE_FLAG = "MEDFINDER_LIVE_PRICES"
@@ -146,6 +147,14 @@ def refresh_prices(medicines, budget_seconds=DEFAULT_BUDGET_SECONDS):
             continue
         listing = (reference or {}).get("listing") or {}
         found = float(listing.get("price") or 0) > 0
+        # The matched listing is this exact product, so its photo can fill a missing one.
+        photo = _clean_listing_image(((reference or {}).get("item") or {}).get("image"))
+        if photo and not has_real_image(item.get("image_url")):
+            try:
+                store_image(item["id"], photo)
+                record_attempt(item["id"], True)
+            except Exception:
+                pass
         if found:
             _store(item["id"], listing)
             stored += 1

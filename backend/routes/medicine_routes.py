@@ -27,7 +27,8 @@ from backend.medicine_data import parse_composition, restricted_reason
 from backend.services.price_comparison_service import compare_current_prices
 from backend.services.price_enrichment_service import persist_reference_price
 from backend.services.enrichment_worker import request_enrichment
-from backend.services.live_price_refresh import substitutes_with_live_prices
+from backend.services.live_price_refresh import substitutes_with_live_prices, live_prices_enabled
+from backend.services.image_lookup import MAX_IDS_PER_REQUEST, fill_images
 
 from backend.services.external_api_service import pop_issues
 from backend.services.search_notice_service import related_by_ingredient, build_notice
@@ -129,6 +130,24 @@ def medicine_details(medicine_id):
         "success": True,
         "data": dict(medicine)
     })
+
+
+@medicine_bp.route("/medicine-images", methods=["GET"])
+def medicine_images():
+    """Verified product photos for rows that have none (looked up once, then cached in the DB)."""
+    ids = []
+    for part in (request.args.get("ids") or "").split(","):
+        if part.strip().isdigit() and int(part) not in ids:
+            ids.append(int(part))
+    ids = ids[:MAX_IDS_PER_REQUEST]
+    if not ids or not live_prices_enabled():
+        return jsonify({"success": True, "images": {}})
+    try:
+        rows = [dict(row) for row in (get_medicine(i) for i in ids) if row is not None]
+        found = fill_images(rows)
+    except Exception:
+        found = {}
+    return jsonify({"success": True, "images": {str(k): v for k, v in found.items()}})
 
 
 # ==========================================================

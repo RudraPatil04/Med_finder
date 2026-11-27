@@ -1242,15 +1242,55 @@
         return /^https:\/\//.test(url) && url.indexOf(SHARED_PLACEHOLDER_IMAGE) === -1 ? url : "";
     }
 
+    function photoTag(photo) {
+        return '<img class="med-photo" src="' + escapeHtml(photo) + '" alt="" loading="lazy" referrerpolicy="no-referrer"' +
+            ' onload="this.parentNode.classList.add(\'has-photo\')" onerror="this.remove()">';
+    }
+
+    // A row without a photo asks the server once for a verified listing photo of the same product.
+    let photoLookupTimer = null;
+    const photoLookupDone = new Set();
+
+    function schedulePhotoLookup() {
+        if (photoLookupTimer) return;
+        photoLookupTimer = setTimeout(async function () {
+            photoLookupTimer = null;
+            const ids = [];
+            document.querySelectorAll("[data-photo-id]").forEach(function (node) {
+                const id = node.getAttribute("data-photo-id");
+                if (id && !photoLookupDone.has(id) && ids.indexOf(id) === -1 && ids.length < 24) ids.push(id);
+            });
+            if (!ids.length) return;
+            ids.forEach(function (id) { photoLookupDone.add(id); });
+            const data = await fetchJson("/api/medicine-images?ids=" + ids.join(","));
+            const images = (data && data.images) || {};
+            Object.keys(images).forEach(function (id) {
+                const photo = photoUrl({ imageUrl: images[id] });
+                if (!photo) return;
+                document.querySelectorAll('[data-photo-id="' + id + '"]').forEach(function (node) {
+                    node.removeAttribute("data-photo-id");
+                    if (!node.querySelector(".med-photo")) node.insertAdjacentHTML("beforeend", photoTag(photo));
+                });
+            });
+            // More rows than one request covers: ask again for the rest.
+            const pending = Array.prototype.some.call(document.querySelectorAll("[data-photo-id]"), function (node) {
+                return !photoLookupDone.has(node.getAttribute("data-photo-id"));
+            });
+            if (pending) schedulePhotoLookup();
+        }, 400);
+    }
+
     function medicineVisual(medicine, className, badges) {
         const family = formFamily(medicine.form);
         const photo = photoUrl(medicine);
+        const lookup = !photo && /^\d+$/.test(String(medicine.id || ""));
+        if (lookup) schedulePhotoLookup();
         // The drawing stays until the photo has actually loaded, so a slow or blocked image never leaves a blank box.
-        return '<div class="' + className + ' ' + FORM_GRADIENT[family] + '">' +
+        return '<div class="' + className + ' ' + FORM_GRADIENT[family] + '"' +
+            (lookup ? ' data-photo-id="' + escapeHtml(String(medicine.id)) + '"' : '') + '>' +
             badges +
             '<span class="med-art" aria-hidden="true"><svg viewBox="0 0 64 64">' + FORM_ART[family] + '</svg></span>' +
-            (photo ? '<img class="med-photo" src="' + escapeHtml(photo) + '" alt="" loading="lazy" referrerpolicy="no-referrer"' +
-                ' onload="this.parentNode.classList.add(\'has-photo\')" onerror="this.remove()">' : '') +
+            (photo ? photoTag(photo) : '') +
             '</div>';
     }
 
