@@ -101,12 +101,13 @@ class AssistantTests(unittest.TestCase):
 
 
 class DiseaseServiceTests(unittest.TestCase):
-    def test_six_conditions(self):
+    def test_thirty_conditions(self):
         ids = [d["id"] for d in get_all_diseases()]
-        self.assertEqual(ids, ["diabetes", "hypertension", "asthma", "gerd", "migraine", "viral_fever"])
+        self.assertEqual(len(ids), 30)
+        self.assertEqual(len(set(ids)), 30)
 
     def test_symptom_queries_find_a_condition(self):
-        self.assertEqual(get_disease_by_id_or_name("headache")["id"], "migraine")
+        self.assertEqual(get_disease_by_id_or_name("headache")["id"], "headache")
         self.assertEqual(get_disease_by_id_or_name("wheezing")["id"], "asthma")
         self.assertEqual(get_disease_by_id_or_name("heartburn")["id"], "gerd")
 
@@ -114,7 +115,7 @@ class DiseaseServiceTests(unittest.TestCase):
         self.assertIsNone(get_disease_by_id_or_name("zzzunknown"))
 
     def test_empty_query_returns_default(self):
-        self.assertEqual(get_disease_by_id_or_name("")["id"], "diabetes")
+        self.assertEqual(get_disease_by_id_or_name("")["id"], "common_cold")
 
 
 class DiseaseRouteTests(unittest.TestCase):
@@ -125,7 +126,7 @@ class DiseaseRouteTests(unittest.TestCase):
 
     def test_list_returns_all(self):
         data = self.client.get("/api/disease").get_json()
-        self.assertEqual(len(data["all"]), 6)
+        self.assertEqual(len(data["all"]), 30)
 
     def test_unknown_returns_no_match(self):
         response = self.client.get("/api/disease?q=zzzunknown")

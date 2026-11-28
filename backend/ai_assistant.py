@@ -82,6 +82,7 @@ def cache_put(question, medicine_id, answer):
 def clear_cache():
     with _cache_lock:
         _cache.clear()
+        _disease_cache.clear()
 
 
 def _link(name, medicine_id):
@@ -168,6 +169,11 @@ def _gemini_generate(question, context, deadline):
             + "\n\nUser question: " + question}]}],
         "generationConfig": {"temperature": 0.2, "maxOutputTokens": 400},
     }
+    return _gemini_post(payload, deadline)
+
+
+def _gemini_post(payload, deadline):
+    """POST one request, trying each key and model until one answers or the deadline passes."""
     failures = []
     for name, key in ocr_service._gemini_keys():
         quota_hit = False
@@ -234,3 +240,101 @@ def ai_answer(question, medicine, disclaimer):
     answer = text + "\n\n*Written by Gemini AI from MED FINDER catalog data.*" + disclaimer
     cache_put(question, medicine_id, answer)
     return answer
+
+
+# ---------------------------------------------------------------------------
+# Disease guide for conditions the curated list does not cover
+# ---------------------------------------------------------------------------
+
+AI_DISEASE_TIMEOUT_SECONDS = 8.0
+AI_LABEL = "AI-generated general information"
+
+DISEASE_PROMPT = """You write short, general health information for an Indian medicine information website.
+Return ONLY a JSON object with these keys:
+"is_health_condition": true if the text names a real disease, health condition or symptom, else false.
+"name": the condition's common English name.
+"category": one or two words, for example "Respiratory" or "Dermatology".
+"summary": one plain sentence describing the condition.
+"symptoms", "causes", "lifestyle", "diet": arrays of 2 to 5 short plain-English points each.
+"emergency": one sentence on warning signs that need urgent medical care.
+"relief": an array chosen ONLY from these keys, for over-the-counter style symptom relief that is commonly used for this condition: %s. Use [] when the condition needs a doctor's diagnosis or prescription treatment, or when none fit.
+Rules: general information only. Do NOT name any medicine, drug or brand in any text field. Do NOT give doses, schedules, diagnoses, or advice for pregnancy, children or drug interactions. Be accurate and conservative."""
+
+_DOSE_TEXT = re.compile(r"\b\d+(?:\.\d+)?\s*(?:mg|mcg|ml|g|iu|units?)\b|\b(?:tablets?|capsules?|dose|dosage|"
+                        r"antibiotics? (?:like|such as)|take \w+ (?:mg|tablet))\b", re.I)
+_disease_cache = OrderedDict()
+
+
+def _clean_list(value, limit=5):
+    if not isinstance(value, list):
+        return []
+    items = [" ".join(str(v).split())[:200] for v in value if str(v).strip()]
+    return items[:limit]
+
+
+def _disease_from_ai(query, data):
+    from backend.disease_medicines import AI_RELIEF_KEYS
+    from backend.disease_service import SEE_DOCTOR
+
+    if not isinstance(data, dict) or not data.get("is_health_condition"):
+        return None
+    disease = {
+        "id": "ai:" + "-".join(re.findall(r"[a-z0-9]+", query.lower()))[:60],
+        "name": " ".join(str(data.get("name") or query).split())[:80],
+        "category": " ".join(str(data.get("category") or "General").split())[:40],
+        "severity": AI_LABEL,
+        "summary": " ".join(str(data.get("summary") or "").split())[:300],
+        "emergency": " ".join(str(data.get("emergency") or "").split())[:300]
+        or "Consult a doctor for urgent or worsening symptoms.",
+        "symptoms": _clean_list(data.get("symptoms")),
+        "causes": _clean_list(data.get("causes")),
+        "lifestyle": _clean_list(data.get("lifestyle")),
+        "diet": _clean_list(data.get("diet")),
+        "keywords": [],
+        "relief": [k for k in (data.get("relief") or []) if isinstance(k, str) and k in AI_RELIEF_KEYS][:3],
+        "ai_generated": True,
+    }
+    text = " ".join([disease["name"], disease["summary"], disease["emergency"]]
+                    + disease["symptoms"] + disease["causes"] + disease["lifestyle"] + disease["diet"])
+    if not _acceptable(text) or _DOSE_TEXT.search(text):
+        print("AI disease guide: answer broke a safety rule; not shown.")
+        return None
+    if not disease["symptoms"]:
+        return None
+    disease["medicine_note"] = None if disease["relief"] else SEE_DOCTOR
+    return disease
+
+
+def ai_disease_guide(query):
+    """General information for a condition outside the curated list, or None.
+    None means: switch off, no key, Gemini failed or slow, unsafe answer, or not a condition."""
+    if not ai_enabled():
+        return None
+    key = " ".join(re.findall(r"[a-z0-9]+", (query or "").lower()))
+    if not key or len(key) > 80:
+        return None
+    with _cache_lock:
+        if key in _disease_cache:
+            _disease_cache.move_to_end(key)
+            return _disease_cache[key]
+    from backend.disease_medicines import AI_RELIEF_KEYS, RELIEF_PRODUCTS
+
+    allowed = ", ".join(f'"{k}" ({RELIEF_PRODUCTS[k]["label"]})' for k in AI_RELIEF_KEYS)
+    payload = {
+        "systemInstruction": {"parts": [{"text": DISEASE_PROMPT % allowed}]},
+        "contents": [{"role": "user", "parts": [{"text": "Condition searched: " + query.strip()[:80]}]}],
+        "generationConfig": {"temperature": 0.2, "maxOutputTokens": 800,
+                             "responseMimeType": "application/json"},
+    }
+    try:
+        text = _gemini_post(payload, time.monotonic() + AI_DISEASE_TIMEOUT_SECONDS)
+        text = re.sub(r"^```[a-z]*\s*|\s*```$", "", text.strip())
+        disease = _disease_from_ai(query, json.loads(text))
+    except Exception as error:
+        print(f"AI disease guide unavailable ({error})")
+        return None
+    with _cache_lock:
+        _disease_cache[key] = disease
+        while len(_disease_cache) > CACHE_SIZE:
+            _disease_cache.popitem(last=False)
+    return disease

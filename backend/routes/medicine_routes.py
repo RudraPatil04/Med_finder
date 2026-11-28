@@ -300,16 +300,41 @@ def disease_guidance_api():
     disease = get_disease_by_id_or_name(query)
 
     if disease is None:
+        # Optional Gemini guide (off unless MEDFINDER_AI_ASSISTANT=1); None on any failure.
+        from backend.ai_assistant import ai_disease_guide
+        disease = ai_disease_guide(query)
+
+    if disease is None:
         return jsonify({
             "success": False,
             "data": None,
-            "message": "No matching condition found. Please consult a doctor for symptoms that worry you."
+            "message": "We don't have a guide for that yet. Please choose one of the conditions listed, "
+                       "or consult a doctor for symptoms that worry you.",
+            "available": [{"id": d["id"], "name": d["name"]} for d in get_all_diseases()],
         }), 404
 
     return jsonify({
         "success": True,
         "data": disease
     })
+
+
+@medicine_bp.route("/disease/medicines", methods=["GET"])
+def disease_medicines_api():
+    """Related catalog products for a curated condition (?id=) or AI guide relief keys (?keys=)."""
+    from backend.disease_medicines import AI_RELIEF_KEYS, related_medicines
+
+    disease_id = request.args.get("id", "").strip()
+    if disease_id:
+        disease = next((d for d in get_all_diseases() if d["id"] == disease_id), None)
+        if disease is None:
+            return jsonify({"success": False, "message": "Unknown condition."}), 404
+    else:
+        # Keys come from an AI-written guide, so only the AI allowlist is honoured.
+        keys = [k.strip() for k in request.args.get("keys", "").split(",")
+                if k.strip() in AI_RELIEF_KEYS][:5]
+        disease = {"relief": keys, "medicine_note": None}
+    return jsonify({"success": True, "data": related_medicines(disease)})
 
 
 # ==========================================================

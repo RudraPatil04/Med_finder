@@ -1099,11 +1099,13 @@
         const list = document.getElementById("diseaseList");
         const detail = document.getElementById("diseaseDetail");
         const input = document.getElementById("diseaseSearchInput");
+        const form = document.getElementById("diseaseSearchForm");
         const status = document.getElementById("diseaseStatus");
         if (!list || !detail) return;
 
         let diseases = [];
         let active = null;
+        let requestId = 0;
 
         list.innerHTML = '<p class="empty-copy">Loading conditions…</p>';
         fetchJson("/api/disease").then(function (apiData) {
@@ -1113,77 +1115,212 @@
                 announce("Condition guidance could not be loaded.");
                 return;
             }
-            active = diseases[0].id;
+            const initial = new URLSearchParams(window.location.search).get("q");
+            if (initial && input) {
+                input.value = initial;
+                filterList();
+                lookUp();
+                return;
+            }
+            showDisease(diseases[0]);
             renderDiseaseList(diseases);
-            renderDiseaseDetail(diseases[0]);
             announce(diseases.length + " conditions available.");
         });
 
-        if (input) {
-            input.addEventListener("input", function () {
-                const query = input.value.trim().toLowerCase();
-                const matches = diseases.filter(function (d) { return diseaseMatches(d, query); });
-                renderDiseaseList(matches);
-                if (query) {
-                    announce(matches.length
-                        ? matches.length + (matches.length === 1 ? " condition matches." : " conditions match.")
-                        : "No matching conditions. Please consult a doctor for symptoms that worry you.");
-                }
+        if (input) input.addEventListener("input", filterList);
+        if (form) {
+            form.addEventListener("submit", function (event) {
+                event.preventDefault();
+                lookUp();
             });
-            const form = document.getElementById("diseaseSearchForm");
-            if (form) {
-                form.addEventListener("submit", function (event) {
-                    event.preventDefault();
-                    const first = list.querySelector("button");
-                    if (first) first.click();
-                });
-            }
         }
 
         list.addEventListener("click", function (event) {
             const button = event.target.closest("button");
             if (!button) return;
-            active = button.dataset.id;
-            list.querySelectorAll("button").forEach((b) => b.classList.remove("active"));
-            button.classList.add("active");
-            const d = diseases.find((x) => x.id === active);
+            if (button.dataset.lookup) {
+                lookUp();
+                return;
+            }
+            const d = diseases.find((x) => x.id === button.dataset.id);
             if (d) {
-                renderDiseaseDetail(d);
+                showDisease(d);
+                list.querySelectorAll("button").forEach((b) => b.classList.toggle("active", b === button));
                 announce("Showing guidance for " + d.name + ".");
             }
         });
 
-        function diseaseMatches(d, query) {
-            if (!query) return true;
-            const fields = [d.name, d.category].concat(Array.isArray(d.symptoms) ? d.symptoms : []);
-            return fields.some(function (f) { return String(f || "").toLowerCase().includes(query); });
+        detail.addEventListener("click", function (event) {
+            const button = event.target.closest("[data-show-id]");
+            if (!button) return;
+            const d = diseases.find((x) => x.id === button.dataset.showId);
+            if (d) {
+                if (input) input.value = "";
+                showDisease(d);
+                renderDiseaseList(diseases);
+                announce("Showing guidance for " + d.name + ".");
+            }
+        });
+
+        function currentQuery() {
+            return input ? input.value.trim().toLowerCase().replace(/\s+/g, " ") : "";
         }
 
-        function announce(text) {
-            if (status) status.textContent = text;
+        // Mirrors match_tier() in backend/disease_service.py.
+        function matchTier(d, query) {
+            if (!query) return 9;
+            const keywords = Array.isArray(d.keywords) ? d.keywords : [];
+            const name = String(d.name || "").toLowerCase();
+            if (d.id === query || name === query || keywords.indexOf(query) >= 0) return 0;
+            const nameWords = name.match(/[a-z0-9']+/g) || [];
+            const queryWords = query.match(/[a-z0-9']+/g) || [];
+            if ((queryWords.length && queryWords.every((w) => nameWords.indexOf(w) >= 0))
+                || keywords.some((k) => k.indexOf(query) === 0)) return 1;
+            const startsWord = new RegExp("\\b" + query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+            if (startsWord.test(name) || startsWord.test(String(d.category || "").toLowerCase())
+                || keywords.some((k) => startsWord.test(k))) return 2;
+            if ((d.symptoms || []).some((sym) => startsWord.test(String(sym).toLowerCase()))) return 3;
+            return null;
         }
 
-        function renderDiseaseList(items) {
+        function matchingDiseases(query) {
+            return diseases
+                .map((d, i) => ({ d: d, i: i, tier: matchTier(d, query) }))
+                .filter((x) => x.tier !== null)
+                .sort((x, y) => x.tier - y.tier || x.i - y.i)
+                .map((x) => x.d);
+        }
+
+        function filterList() {
+            const query = currentQuery();
+            const matches = matchingDiseases(query);
+            renderDiseaseList(matches, query);
+            if (query) {
+                announce(matches.length
+                    ? matches.length + (matches.length === 1 ? " condition matches." : " conditions match.")
+                    : "No guide in the list. Press Enter to look it up.");
+            }
+        }
+
+        async function lookUp() {
+            const query = currentQuery();
+            if (!query) return;
+            const local = matchingDiseases(query);
+            if (local.length) {
+                showDisease(local[0]);
+                renderDiseaseList(local, query);
+                announce("Showing guidance for " + local[0].name + ".");
+                return;
+            }
+            const mine = ++requestId;
+            active = null;
+            detail.innerHTML = '<article class="disease-hero"><p class="subline">Looking up “' + escapeHtml(query) + '”…</p></article>';
+            announce("Looking up " + query + ".");
+            const response = await fetchJson("/api/disease?q=" + encodeURIComponent(query));
+            if (mine !== requestId) return;
+            if (response && response.success && response.data) {
+                showDisease(response.data);
+                announce("Showing AI-generated general information for " + response.data.name + ".");
+                return;
+            }
+            renderNoGuide(query);
+            announce("We don't have a guide for " + query + " yet.");
+        }
+
+        function renderNoGuide(query) {
+            const popular = ["common_cold", "viral_fever", "headache", "allergy", "gerd", "diarrhea"]
+                .map((id) => diseases.find((d) => d.id === id)).filter(Boolean);
+            detail.innerHTML =
+                '<article class="disease-hero">' +
+                '<h2>We don’t have a guide for “' + escapeHtml(query) + '” yet</h2>' +
+                '<p class="subline">Pick one of the ' + diseases.length + ' conditions in the list, or ask a doctor or pharmacist about your symptoms.</p>' +
+                '<div class="badge-row disease-chips">' + popular.map((d) =>
+                    '<button type="button" class="badge" data-show-id="' + escapeHtml(d.id) + '">' + escapeHtml(d.name) + '</button>').join("") +
+                '</div></article>';
+        }
+
+        function renderDiseaseList(items, query) {
             list.innerHTML = items.map(function (d) {
-                return '<button type="button" class="' + (d.id === active ? "active" : "") + '" data-id="' + d.id + '" data-name="' + escapeHtml(d.name) + '">' +
+                return '<button type="button" class="' + (d.id === active ? "active" : "") + '" data-id="' + escapeHtml(d.id) + '">' +
                     '<strong>' + escapeHtml(d.name) + '</strong><small>' + escapeHtml(d.category) + ' | ' + escapeHtml(d.severity) + '</small></button>';
-            }).join("") || '<p class="empty-copy">No matching conditions.</p>';
+            }).join("") || (query
+                ? '<p class="empty-copy">No guide in the list for “' + escapeHtml(query) + '”.</p>' +
+                  '<button type="button" class="btn btn-outline btn-block" data-lookup="1">Look it up</button>'
+                : '<p class="empty-copy">No matching conditions.</p>');
         }
 
-        function renderDiseaseDetail(d) {
-            const note = "";
+        function showDisease(d) {
+            active = d.id;
+            const ai = !!d.ai_generated;
+            const hasRelief = Array.isArray(d.relief) && d.relief.length > 0;
             detail.innerHTML =
                 '<article class="disease-hero">' +
                 '<div class="badge-row"><span class="badge">' + escapeHtml(d.category || "Guidance") + '</span><span class="badge secondary">' + escapeHtml(d.severity || "Info") + '</span></div>' +
-                '<h2>' + escapeHtml(d.name || "Disease Guidance") + '</h2>' + note +
-                '<div class="alert-box"><span class="icon icon-shield"></span><div><strong>Emergency</strong><p>' + escapeHtml(d.emergency || "Consult a doctor for urgent or worsening symptoms.") + '</p></div></div>' +
+                '<h2>' + escapeHtml(d.name || "Disease Guidance") + '</h2>' +
+                (ai ? '<p class="subline ai-note"><strong>AI-generated general information.</strong> Written by Gemini AI, not reviewed by a doctor, and may be incomplete or wrong.</p>' : '') +
+                (d.summary ? '<p class="subline">' + escapeHtml(d.summary) + '</p>' : '') +
+                '<div class="alert-box"><span class="icon icon-shield"></span><div><strong>When to get urgent help</strong><p>' + escapeHtml(d.emergency || "Consult a doctor for urgent or worsening symptoms.") + '</p></div></div>' +
                 '</article>' +
                 '<div class="disease-panels">' +
                 panel("Symptoms", "activity", d.symptoms) +
                 panel("Causes", "heart", d.causes) +
                 panel("Lifestyle", "stethoscope", d.lifestyle) +
                 panel("Diet", "plus", d.diet) +
-                '</div>';
+                '</div>' +
+                '<section class="info-panel related-medicines" id="relatedMedicines">' +
+                relatedHeading() +
+                (hasRelief ? '<p class="empty-copy">Loading catalog products…</p>' : relatedNote(d.medicine_note)) +
+                '</section>';
+            if (hasRelief) loadRelated(d);
+        }
+
+        function relatedHeading() {
+            return '<h3><span class="icon icon-activity"></span>Related medicines</h3>';
+        }
+
+        function relatedNote(note) {
+            return '<p class="subline">' + escapeHtml(note || "Please ask a doctor or pharmacist.") + '</p>';
+        }
+
+        async function loadRelated(d) {
+            const mine = d.id;
+            const url = d.ai_generated
+                ? "/api/disease/medicines?keys=" + encodeURIComponent(d.relief.join(","))
+                : "/api/disease/medicines?id=" + encodeURIComponent(d.id);
+            const response = await fetchJson(url);
+            const box = document.getElementById("relatedMedicines");
+            if (!box || active !== mine) return;
+            const data = response && response.success ? response.data : null;
+            if (!data || !data.groups || !data.groups.length) {
+                box.innerHTML = relatedHeading() + relatedNote((data && data.note) || d.medicine_note ||
+                    "No catalog products are listed for this condition. Please ask a doctor or pharmacist.");
+                return;
+            }
+            box.innerHTML = relatedHeading() +
+                '<p class="relief-note">' + escapeHtml(data.relief_note) + '</p>' +
+                (data.note ? relatedNote(data.note) : '') +
+                data.groups.map(function (group) {
+                    return '<div class="relief-group"><h4>' + escapeHtml(group.label) + '</h4>' +
+                        group.products.map(reliefCard).join("") + '</div>';
+                }).join("") +
+                '<p class="subline">' + escapeHtml(data.pharmacist_line) +
+                ' Prices are recorded catalog prices, cheapest per unit first. Products with the same ingredients are not automatically interchangeable.</p>';
+        }
+
+        function reliefCard(item) {
+            const m = normalizeMedicine(item);
+            const rx = !!item.prescription_required;
+            return '<a class="result-row card-hover relief-card" href="/medicine/' + encodeURIComponent(m.id) + '">' +
+                medicineVisual(m, "medicine-visual", rx ? '<span class="rx-badge">Rx</span>' : '') +
+                '<div><h3>' + escapeHtml(m.name) + '</h3><p>' + escapeHtml([m.composition, m.packSize].filter(Boolean).join(" · ")) + '</p>' +
+                (rx ? '<p class="rx-line">Prescription required</p>' : '') + '</div>' +
+                '<div class="price-row"><div><div class="price">' + priceLabel(m) + '</div><div class="mrp">' +
+                (item.price_is_current ? priceProvenance(m) : 'Catalog price (unverified)') + '</div></div></div>' +
+                '</a>';
+        }
+
+        function announce(text) {
+            if (status) status.textContent = text;
         }
     }
 
