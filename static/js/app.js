@@ -1099,67 +1099,69 @@
         const list = document.getElementById("diseaseList");
         const detail = document.getElementById("diseaseDetail");
         const input = document.getElementById("diseaseSearchInput");
+        const status = document.getElementById("diseaseStatus");
         if (!list || !detail) return;
 
-        const diseases = [
-            {
-                id: "diabetes",
-                name: "Type 2 Diabetes",
-                category: "Endocrine",
-                severity: "Chronic",
-                emergency: "Seek immediate care if blood sugar is very high or symptoms of ketoacidosis appear.",
-                symptoms: ["Frequent urination", "Increased thirst", "Fatigue", "Blurred vision"],
-                causes: ["Insulin resistance", "Genetics", "Obesity", "Sedentary lifestyle"],
-                lifestyle: ["30 min daily exercise", "Weight management", "Stress control", "Regular checkups"],
-                diet: ["Whole grains", "Leafy vegetables", "Lean protein", "Avoid sugary drinks"]
-            },
-            {
-                id: "hypertension",
-                name: "Hypertension",
-                category: "Cardiovascular",
-                severity: "Chronic",
-                emergency: "Blood pressure above 180/120 with symptoms needs emergency care.",
-                symptoms: ["Headache", "Dizziness", "Chest tightness", "Often asymptomatic"],
-                causes: ["High sodium diet", "Stress", "Obesity", "Genetics"],
-                lifestyle: ["Reduce salt", "Regular exercise", "Sleep 7 to 8 hours", "Monitor BP weekly"],
-                diet: ["DASH diet", "Potassium-rich foods", "Reduce processed foods"]
-            },
-            {
-                id: "asthma",
-                name: "Asthma",
-                category: "Respiratory",
-                severity: "Chronic",
-                emergency: "Blue lips or inability to speak requires urgent care.",
-                symptoms: ["Wheezing", "Shortness of breath", "Chest tightness", "Coughing at night"],
-                causes: ["Allergens", "Air pollution", "Genetics"],
-                lifestyle: ["Avoid triggers", "Use spacer with inhaler", "Vaccinate against flu"],
-                diet: ["Vitamin D-rich foods", "Omega-3", "Avoid sulfite foods"]
+        let diseases = [];
+        let active = null;
+
+        list.innerHTML = '<p class="empty-copy">Loading conditions…</p>';
+        fetchJson("/api/disease").then(function (apiData) {
+            diseases = apiData && apiData.success && Array.isArray(apiData.all) ? apiData.all : [];
+            if (!diseases.length) {
+                list.innerHTML = '<p class="empty-copy">Condition guidance could not be loaded. Please refresh the page.</p>';
+                announce("Condition guidance could not be loaded.");
+                return;
             }
-        ];
-
-        let active = diseases[0].id;
-        renderDiseaseList(diseases);
-        renderDiseaseDetail(diseases[0]);
-
-        input.addEventListener("input", function () {
-            const query = input.value.trim().toLowerCase();
-            renderDiseaseList(diseases.filter((d) => d.name.toLowerCase().includes(query)));
+            active = diseases[0].id;
+            renderDiseaseList(diseases);
+            renderDiseaseDetail(diseases[0]);
+            announce(diseases.length + " conditions available.");
         });
 
-        list.addEventListener("click", async function (event) {
+        if (input) {
+            input.addEventListener("input", function () {
+                const query = input.value.trim().toLowerCase();
+                const matches = diseases.filter(function (d) { return diseaseMatches(d, query); });
+                renderDiseaseList(matches);
+                if (query) {
+                    announce(matches.length
+                        ? matches.length + (matches.length === 1 ? " condition matches." : " conditions match.")
+                        : "No matching conditions. Please consult a doctor for symptoms that worry you.");
+                }
+            });
+            const form = document.getElementById("diseaseSearchForm");
+            if (form) {
+                form.addEventListener("submit", function (event) {
+                    event.preventDefault();
+                    const first = list.querySelector("button");
+                    if (first) first.click();
+                });
+            }
+        }
+
+        list.addEventListener("click", function (event) {
             const button = event.target.closest("button");
             if (!button) return;
             active = button.dataset.id;
             list.querySelectorAll("button").forEach((b) => b.classList.remove("active"));
             button.classList.add("active");
-
-            const apiData = await fetchJson("/api/disease?q=" + encodeURIComponent(button.dataset.name || ""));
-            if (apiData && apiData.success && apiData.data) {
-                renderDiseaseDetail(apiData.data);
-                return;
+            const d = diseases.find((x) => x.id === active);
+            if (d) {
+                renderDiseaseDetail(d);
+                announce("Showing guidance for " + d.name + ".");
             }
-            renderDiseaseDetail(diseases.find((d) => d.id === active) || diseases[0], true);
         });
+
+        function diseaseMatches(d, query) {
+            if (!query) return true;
+            const fields = [d.name, d.category].concat(Array.isArray(d.symptoms) ? d.symptoms : []);
+            return fields.some(function (f) { return String(f || "").toLowerCase().includes(query); });
+        }
+
+        function announce(text) {
+            if (status) status.textContent = text;
+        }
 
         function renderDiseaseList(items) {
             list.innerHTML = items.map(function (d) {
@@ -1168,8 +1170,8 @@
             }).join("") || '<p class="empty-copy">No matching conditions.</p>';
         }
 
-        function renderDiseaseDetail(d, fallback) {
-            const note = fallback ? '<p class="subline">Showing general guidance for this condition.</p>' : "";
+        function renderDiseaseDetail(d) {
+            const note = "";
             detail.innerHTML =
                 '<article class="disease-hero">' +
                 '<div class="badge-row"><span class="badge">' + escapeHtml(d.category || "Guidance") + '</span><span class="badge secondary">' + escapeHtml(d.severity || "Info") + '</span></div>' +
@@ -1203,7 +1205,7 @@
         });
 
         document.querySelector("[data-new-chat]").addEventListener("click", function () {
-            messages.innerHTML = '<div class="chat-row ai"><span class="avatar-icon icon icon-bot"></span><div class="bubble">Hi. I am your MED FINDER assistant. Ask about medicines, doses, alternatives, or when to see a doctor.</div></div>';
+            messages.innerHTML = '<div class="chat-row ai"><span class="avatar-icon icon icon-bot"></span><div class="bubble">Hi. I am your MED FINDER assistant. Ask what a medicine contains or where to find same-composition options.</div></div>';
             suggestions.hidden = false;
         });
 
@@ -1600,9 +1602,19 @@
         const icon = role === "user" ? "icon-message" : "icon-bot";
         return '<div class="chat-row ' + role + '">' +
             (role === "ai" ? '<span class="avatar-icon icon ' + icon + '"></span>' : '') +
-            '<div class="bubble">' + escapeHtml(text) + '</div>' +
+            '<div class="bubble">' + (role === "ai" ? formatAssistantText(text) : escapeHtml(text)) + '</div>' +
             (role === "user" ? '<span class="avatar-icon icon ' + icon + '"></span>' : '') +
             '</div>';
+    }
+
+    // Escape first, then add only a fixed set of markup: **bold**, *italic*,
+    // line breaks, and [label](/medicine/<id>) links to this app's detail pages.
+    function formatAssistantText(text) {
+        return escapeHtml(text)
+            .replace(/\[([^\]\n]{1,120})\]\((\/medicine\/\d+)\)/g, '<a href="$2">$1</a>')
+            .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
+            .replace(/(^|[\s(])\*([^*\n]+)\*(?=[\s.,;:!?)]|$)/g, "$1<em>$2</em>")
+            .replace(/\n/g, "<br>");
     }
 
     async function fetchJson(url, options) {

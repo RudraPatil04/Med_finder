@@ -1819,6 +1819,12 @@ input[type="range"] {
     line-height: 1.55;
 }
 
+.bubble a {
+    color: var(--primary);
+    font-weight: 600;
+    text-decoration: underline;
+}
+
 .chat-row.user .bubble {
     color: #fff;
     background: linear-gradient(135deg, var(--primary), var(--secondary));

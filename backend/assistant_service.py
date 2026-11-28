@@ -2,124 +2,205 @@
 ============================================================
 MED FINDER
 AI HEALTH ASSISTANT SERVICE
-Version : 1.0
 ============================================================
+
+Rule-based answers. Honesty rules (see CLAUDE.md):
+- never call products identical, bioequivalent or interchangeable;
+- never quote savings that are not computed from stored prices;
+- symptom answers give self-care and red flags only, no drug names or doses;
+- always point the user to a pharmacist or doctor.
+
+Replies use a tiny markup the UI renders safely: **bold**, newlines, and
+[label](/medicine/<id>) links to this app's own detail pages.
 """
 
 import re
+
 from backend.services.medicine_service import search_medicines
 
-DISCLAIMER = "\n\n⚠️ Disclaimer: I am an AI assistant for informational purposes only. Always consult a qualified healthcare professional or doctor for medical diagnosis, prescriptions, or personalized treatment."
+DISCLAIMER = (
+    "\n\nNote: I give general information only. Please confirm with a doctor or "
+    "pharmacist before starting, stopping or switching any medicine."
+)
+
+EMERGENCY_KEYWORDS = [
+    "chest pain", "heart attack", "can't breathe", "cannot breathe",
+    "severe bleeding", "unconscious", "stroke", "poisoning", "overdose",
+]
+
+# Words that never name a medicine; removed before the catalog lookup so that
+# "Cheaper option for Dolo 650" searches "Dolo 650", not "option".
+STOP_WORDS = {
+    "a", "an", "the", "is", "in", "of", "on", "to", "for", "with", "and", "or",
+    "what", "whats", "when", "where", "which", "who", "how", "why", "can", "could",
+    "should", "would", "do", "does", "i", "me", "my", "it", "its", "there", "any",
+    "take", "give", "dose", "dosage", "side", "effect", "effects", "reaction",
+    "reactions", "price", "about", "tell", "explain", "generic", "generics",
+    "alternative", "alternatives", "cheap", "cheaper", "cheapest", "option",
+    "options", "substitute", "substitutes", "cost", "costs", "inside", "contain",
+    "contains", "composition", "ingredient", "ingredients", "salt", "medicine",
+    "medicines", "tablet", "tablets", "please", "info", "information", "than",
+    "vs", "long", "term", "safe", "use", "used", "uses", "hello", "hi", "hey",
+    "thanks", "thank", "you", "there", "need", "want", "know", "have", "has",
+}
+
+
+def _query_terms(user_message):
+    tokens = re.findall(r"[A-Za-z0-9]+(?:[.\-][A-Za-z0-9]+)*", user_message or "")
+    return [t for t in tokens if t.lower() not in STOP_WORDS]
+
+
+def find_medicines(user_message):
+    """Look up the medicine named in the message, local catalog only."""
+    terms = _query_terms(user_message)
+    if not terms:
+        return []
+    candidates = []
+    phrase = " ".join(terms)
+    if len(terms) > 1:
+        candidates.append(phrase)
+    candidates.extend(t for t in terms if len(t) >= 3 and not t.isdigit())
+    for candidate in candidates[:4]:
+        try:
+            results = search_medicines(candidate, limit=3, enable_api_fallback=False)
+        except Exception:
+            continue
+        relevant = [dict(r) for r in results if _mentions_term(dict(r), terms)]
+        if relevant:
+            return relevant
+    return []
+
+
+def _mentions_term(record, terms):
+    """True when a query word appears as a whole word in the name or composition,
+    so "hello" does not pick up "Hellox"."""
+    text = " ".join(str(record.get(k) or "") for k in ("medicine_name", "composition")).lower()
+    words = set(re.findall(r"[a-z0-9]+", text))
+    return any(t.lower() in words for t in terms if len(t) >= 3 and not t.isdigit())
+
+
+def _detail_link(m):
+    name = m.get("medicine_name") or "this medicine"
+    if m.get("id") is None:
+        return f"**{name}**"
+    return f"[{name}](/medicine/{int(m['id'])})"
+
+
+def _generic_answer(found_meds):
+    lines = [
+        "**Same-composition options**",
+        "A cheaper product with the same recorded active ingredients, strength and "
+        "dosage form may exist. Same composition does not by itself mean two products "
+        "can be swapped for you, so a pharmacist or doctor should confirm before you switch.",
+    ]
+    if found_meds:
+        m = found_meds[0]
+        comp = m.get("composition")
+        lines.append("")
+        if comp:
+            lines.append(f"{_detail_link(m)} is recorded as containing **{comp}**.")
+        else:
+            lines.append(f"I found {_detail_link(m)}, but its composition is not recorded yet.")
+        lines.append(
+            "Open its detail page to see products with the same recorded composition "
+            "and their catalog prices, with how current each price is."
+        )
+    else:
+        lines.append("")
+        lines.append(
+            "Tell me the medicine name (for example *Dolo 650* or *Pan 40*) and I will "
+            "link you to its detail page."
+        )
+    return "\n".join(lines) + DISCLAIMER
+
+
+def _info_answer(m):
+    rx = str(m.get("prescription_required", "")).lower() in ("true", "1", "yes")
+    lines = [
+        f"**{m.get('medicine_name')}**",
+        f"• **Composition**: {m.get('composition') or 'Not recorded yet'}",
+        f"• **Form / strength**: {m.get('dosage_form') or 'Not recorded'}"
+        f" | {m.get('strength') or 'Not recorded'}",
+    ]
+    if m.get("brand_name"):
+        lines.append(f"• **Brand**: {m.get('brand_name')}")
+    if m.get("price"):
+        lines.append(f"• **Catalog price**: Rs. {m.get('price')} (may not be current)")
+    lines.append(f"• **Prescription**: {'Required' if rx else 'Not marked as required'}")
+    lines.append("")
+    lines.append(f"See {_detail_link(m)} for same-composition options and prices.")
+    return "\n".join(lines) + DISCLAIMER
+
 
 def process_assistant_query(user_message):
-    """
-    Process user health and medicine questions with intelligent responses,
-    database lookups, and clinical safety guardrails.
-    """
+    """Answer a health or medicine question with conservative, rule-based text."""
     if not user_message or not user_message.strip():
-        return "Hello! I am your MED FINDER health assistant. How can I help you with medicine information or guidance today?"
+        return ("Hello! I am your MED FINDER assistant. Ask me what a medicine contains "
+                "or where to find same-composition options.")
 
     msg = user_message.strip().lower()
 
-    # Emergency Detection
-    emergency_keywords = ["chest pain", "heart attack", "can't breathe", "cannot breathe", "severe bleeding", "unconscious", "stroke", "poisoning", "overdose"]
-    if any(k in msg for k in emergency_keywords):
-        return "🚨 **EMERGENCY WARNING**: Based on what you described, please seek immediate emergency medical care or call your local emergency services (e.g. 112 / 911 / 108) right away. Do not delay professional hospital evaluation."
+    if any(k in msg for k in EMERGENCY_KEYWORDS):
+        return ("🚨 **EMERGENCY WARNING**: Based on what you described, please seek "
+                "immediate emergency medical care or call your local emergency services "
+                "(e.g. 112 / 108) right away. Do not delay professional hospital evaluation.")
 
-    # Medicine lookup in database
-    # Extract likely medicine names from the message
-    words = [w for w in re.findall(r'\b[a-zA-Z]{3,}\b', user_message) if w.lower() not in ["what", "when", "where", "which", "how", "the", "and", "for", "with", "take", "give", "dose", "side", "effect", "price", "about", "tell", "explain", "generic", "alternative", "cost"]]
+    found_meds = find_medicines(user_message)
 
-    found_meds = []
-    for w in words[:3]:
-        try:
-            results = search_medicines(w, limit=3, enable_api_fallback=False)
-            if results:
-                found_meds.extend(results)
-                break
-        except Exception:
-            pass
+    if any(k in msg for k in ("generic", "alternative", "cheap", "substitute")):
+        return _generic_answer(found_meds)
 
-    # Specific common question patterns
     if "fever" in msg or "temperature" in msg:
         return (
-            "🌡️ **Fever Guidance**:\n"
-            "• **Common OTC Options**: Paracetamol / Acetaminophen (e.g., 500mg or 650mg as advised per body weight).\n"
-            "• **Key Actions**: Stay hydrated with plenty of water and oral electrolytes. Get adequate bed rest and use lukewarm sponge baths if temperature is high.\n"
-            "• **When to see a doctor**: If fever exceeds 103°F (39.4°C), lasts more than 3 days, or is accompanied by stiff neck, rash, or breathing difficulty."
+            "🌡️ **Fever: general self-care**\n"
+            "• Drink plenty of fluids and rest.\n"
+            "• Wear light clothing; a lukewarm sponge can help you feel more comfortable.\n"
+            "• **See a doctor promptly** if the fever is above 103°F (39.4°C), lasts more "
+            "than 3 days, or comes with a stiff neck, rash, confusion or breathing difficulty.\n"
+            "• For a fever medicine and the right dose, ask a pharmacist or doctor, "
+            "especially for children, pregnancy or long-term conditions."
             + DISCLAIMER
         )
 
     if "headache" in msg or "migraine" in msg:
         return (
-            "🧠 **Headache / Migraine Management**:\n"
-            "• **Common Relievers**: Paracetamol, Ibuprofen, or Naproxen (take with food).\n"
-            "• **Supportive Care**: Rest in a quiet, dimly lit room. Stay hydrated, avoid caffeine withdrawal, and apply a cool compress to your forehead.\n"
-            "• **Warning Signs**: A sudden, extremely severe headache ('thunderclap') or headache with neurological weakness requires immediate emergency attention."
+            "🧠 **Headache: general self-care**\n"
+            "• Rest in a quiet, dim room and drink water.\n"
+            "• Regular sleep and meals help prevent many headaches.\n"
+            "• **Get emergency care** for a sudden, extremely severe headache, or one with "
+            "weakness, confusion, fever with a stiff neck, or after a head injury.\n"
+            "• For a pain reliever that suits you, ask a pharmacist or doctor."
             + DISCLAIMER
         )
 
     if "cold" in msg or "cough" in msg or "runny nose" in msg:
         return (
-            "🤧 **Cold & Cough Support**:\n"
-            "• **Allergy / Runny Nose**: Antihistamines like Cetirizine (10mg) or Levocetirizine.\n"
-            "• **Congestion**: Steam inhalation, saline nasal spray, and warm fluids.\n"
-            "• **Cough**: Honey with warm water (for dry cough), expectorants for productive chest cough.\n"
-            "• **Note**: Antibiotics are ineffective against viral colds unless a secondary bacterial infection is diagnosed by a doctor."
+            "🤧 **Cold and cough: general self-care**\n"
+            "• Rest, warm fluids and steam inhalation can ease congestion.\n"
+            "• Most colds are viral; antibiotics do not help them.\n"
+            "• **See a doctor** if you have breathing difficulty, a high fever, chest pain, "
+            "or a cough lasting more than 2 weeks.\n"
+            "• For a medicine that suits you, ask a pharmacist or doctor."
             + DISCLAIMER
         )
 
-    if "generic" in msg or "alternative" in msg or "cheap" in msg or "substitute" in msg:
-        med_context = ""
+    if "side effect" in msg or "reaction" in msg:
+        lines = ["ℹ️ **Side effects**"]
         if found_meds:
             m = found_meds[0]
-            med_context = f"\n\nFor **{m.get('medicine_name')}**, the active composition is *{m.get('composition') or m.get('brand_name')}*. Ask your pharmacist for generic equivalents sharing this exact active salt to save up to 50–80%."
-        return (
-            "💊 **Generic Substitutes**:\n"
-            "Generic medicines contain the identical active chemical ingredient, strength, dosage form, and bioequivalence as branded medications, but typically cost 50% to 80% less because they don't carry marketing overhead."
-            + med_context
-            + "\n• Always confirm the active salt and dosage strength with your pharmacist before switching."
-            + DISCLAIMER
-        )
+            lines.append(f"{_detail_link(m)} is recorded as containing "
+                         f"**{m.get('composition') or 'an unrecorded composition'}**.")
+        lines.append("I cannot list side effects reliably. The leaflet in the pack and your "
+                     "pharmacist are the best sources.")
+        lines.append("• Swelling of the face, a rash, or difficulty breathing can be an allergic "
+                     "reaction: stop and get urgent medical help.")
+        return "\n".join(lines) + DISCLAIMER
 
-    if "side effect" in msg or "reactions" in msg:
-        if found_meds:
-            m = found_meds[0]
-            return (
-                f"ℹ️ **Side Effects for {m.get('medicine_name')}**:\n"
-                f"• **Category**: {m.get('medicine_category', 'General Medication')}\n"
-                f"• **Composition**: {m.get('composition', 'N/A')}\n"
-                "• **Common Precautions**: Take with or after meals to avoid gastrointestinal upset unless directed otherwise. Avoid alcohol when on medications.\n"
-                "• If you experience rashes, facial swelling, severe dizziness, or breathing difficulty, discontinue and contact emergency services immediately."
-                + DISCLAIMER
-            )
-        return (
-            "ℹ️ **Medicine Side Effects**:\n"
-            "Most medicines have mild, self-limiting side effects (like mild stomach upset or drowsiness). However, unexpected swelling, itching, rashes, or difficulty breathing can indicate an allergic reaction. Please specify the exact medicine name to get focused information."
-            + DISCLAIMER
-        )
-
-    # If a medicine was matched in the database
     if found_meds:
-        m = found_meds[0]
-        price_str = f"Rs. {m.get('price')}" if m.get('price') else "Price varies"
-        rx_str = "Yes (Doctor's prescription required)" if str(m.get('prescription_required', '')).lower() in ['true', '1', 'yes'] else "OTC / As advised"
-        return (
-            f"🔍 **Information for {m.get('medicine_name')}**:\n"
-            f"• **Brand / Manufacturer**: {m.get('brand_name', 'N/A')}\n"
-            f"• **Category**: {m.get('medicine_category', 'General')}\n"
-            f"• **Dosage Form & Strength**: {m.get('dosage_form', 'Form')} | {m.get('strength', 'Standard')}\n"
-            f"• **Active Composition**: {m.get('composition', 'Standard Composition')}\n"
-            f"• **Price**: {price_str}\n"
-            f"• **Prescription Required**: {rx_str}\n\n"
-            f"You can view full details and find cheaper alternatives by searching for this medicine on MED FINDER."
-            + DISCLAIMER
-        )
+        return _info_answer(found_meds[0])
 
-    # General fallback response
     return (
-        f"Thank you for your question: *'{user_message}'*.\n\n"
-        "MED FINDER can help you look up medicine compositions, find generic substitutes, compare prices, and explore disease guidance. "
-        "Feel free to ask about specific medicine names (e.g. *Dolo 650*, *Metformin*, *Azithromycin*), symptoms, or medication safety precautions."
+        "I can tell you what a medicine contains and link you to products with the same "
+        "recorded composition. Try *What is in Pan 40?* or *Cheaper option for Dolo 650*."
         + DISCLAIMER
     )

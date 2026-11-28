@@ -83,28 +83,27 @@ def get_all_diseases():
 
 def get_disease_by_id_or_name(query):
     """
-    Search disease guidance by ID, condition name, or symptom keyword.
+    Find one condition by ID, name, category or symptom keyword.
+
+    An empty query returns the first condition (the page's default view).
+    A query that matches nothing returns None rather than an unrelated condition.
     """
-    if not query:
+    if not query or not query.strip():
         return DISEASES_DB[0]
 
     q_clean = query.strip().lower()
 
-    # Exact ID match
     for d in DISEASES_DB:
         if d["id"].lower() == q_clean or d["name"].lower() == q_clean:
             return d
 
-    # Substring in name or category
+    # Name or category first, then symptoms, so "headache" finds migraine
+    # before hypertension's "Severe headaches".
     for d in DISEASES_DB:
         if q_clean in d["name"].lower() or q_clean in d["category"].lower():
             return d
-
-    # Symptom keyword match
     for d in DISEASES_DB:
-        for sym in d["symptoms"]:
-            if q_clean in sym.lower():
-                return d
+        if any(q_clean in sym.lower() for sym in d["symptoms"]):
+            return d
 
-    # Default fallback to first
-    return DISEASES_DB[0]
+    return None

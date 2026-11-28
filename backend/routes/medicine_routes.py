@@ -299,6 +299,13 @@ def disease_guidance_api():
 
     disease = get_disease_by_id_or_name(query)
 
+    if disease is None:
+        return jsonify({
+            "success": False,
+            "data": None,
+            "message": "No matching condition found. Please consult a doctor for symptoms that worry you."
+        }), 404
+
     return jsonify({
         "success": True,
         "data": disease

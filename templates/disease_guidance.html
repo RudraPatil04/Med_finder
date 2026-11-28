@@ -12,8 +12,9 @@
 
     <form class="disease-search glass" id="diseaseSearchForm">
         <span class="search-icon icon icon-search"></span>
-        <input id="diseaseSearchInput" type="search" placeholder="Search diseases, symptoms…" aria-label="Search diseases" autocomplete="off">
+        <input id="diseaseSearchInput" type="search" placeholder="Search conditions or symptoms, e.g. headache" aria-label="Search diseases" autocomplete="off">
     </form>
+    <p class="sr-only" id="diseaseStatus" role="status" aria-live="polite"></p>
 
     <div class="disease-layout">
         <aside class="panel surface-only disease-list" id="diseaseList"></aside>
