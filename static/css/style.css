@@ -2562,15 +2562,24 @@ input[type="range"] {
     gap: 12px;
 }
 
+/* Every option card shares one grid: name and pack on the left, one fixed-width
+   price column on the right (price, saving pill, price source, per unit), and
+   the pick badges on a full-width row underneath. */
 .cheaper-item {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 12px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 8.5rem;
+    grid-template-areas:
+        "copy price"
+        "badges badges";
+    grid-template-rows: auto 1fr;
+    align-items: start;
+    column-gap: 12px;
     padding: 14px 16px;
     background: #fff;
     border: 1px solid var(--border);
     border-radius: 16px;
+    color: inherit;
+    text-decoration: none;
     transition: border-color 0.2s, box-shadow 0.2s, transform 0.2s;
 }
 
@@ -2581,44 +2590,71 @@ input[type="range"] {
 }
 
 .cheaper-copy {
+    grid-area: copy;
     min-width: 0;
 }
 
 .cheaper-copy strong {
-    display: block;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
     font-size: 14px;
+    line-height: 1.35;
     color: var(--text);
+    overflow-wrap: anywhere;
 }
 
 .cheaper-copy small {
     display: block;
-    margin-top: 2px;
+    margin-top: 3px;
     font-size: 12px;
+    line-height: 1.4;
     color: var(--muted);
+    overflow-wrap: anywhere;
 }
 
 .cheaper-price {
-    flex-shrink: 0;
+    grid-area: price;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 4px;
+    min-width: 0;
     text-align: right;
 }
 
-.cheaper-price span {
+.cheaper-price .cheaper-amount {
     display: block;
     font-size: 16px;
     font-weight: 800;
+    line-height: 1.2;
     color: var(--text);
+    white-space: nowrap;
 }
 
 .cheaper-price small {
     display: block;
-    margin-top: 4px;
+    margin: 0;
     font-size: 11px;
+    line-height: 1.35;
     color: var(--muted);
+    overflow-wrap: anywhere;
 }
 
 .cheaper-price .savings-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 999px;
     font-size: 11px;
+    line-height: 1.4;
+    white-space: nowrap;
 }
+
+.cheaper-price .savings-badge.high { color: #15803d; }
+.cheaper-price .savings-badge.medium { color: #1e40af; }
+.cheaper-price .savings-badge.low { color: #b45309; }
+.cheaper-price .savings-badge.estimated { color: #475569; }
 
 .cheaper-reference {
     margin-top: 18px;
@@ -2903,6 +2939,13 @@ button,
     grid-template-columns: 1fr;
 }
 
+/* In the desktop sidebar, every card takes the height of the tallest one. */
+@media (min-width: 769px) {
+    .detail-cheaper .cheaper-list {
+        grid-auto-rows: 1fr;
+    }
+}
+
 .uses-panel {
     grid-column: 1 / -1;
 }
@@ -2913,14 +2956,17 @@ button,
 
 /* Labels on the same-composition list: true of the listed options only. */
 .pick-badges {
+    grid-area: badges;
+    align-self: end;
     display: flex;
     flex-wrap: wrap;
     gap: 4px;
-    margin-top: 6px;
+    margin-top: 10px;
 }
 
 .pick-badge {
     display: inline-block;
+    white-space: nowrap;
     padding: 2px 8px;
     border-radius: 999px;
     font-size: 11px;
@@ -2952,6 +2998,23 @@ button,
     color: var(--text);
     font: inherit;
     cursor: pointer;
+}
+
+@media (max-width: 360px) {
+    .cheaper-item {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-areas:
+            "copy"
+            "price"
+            "badges";
+        grid-template-rows: auto auto 1fr;
+    }
+
+    .cheaper-price {
+        align-items: flex-start;
+        margin-top: 8px;
+        text-align: left;
+    }
 }
 
 .sort-toggle button[aria-pressed="true"] {

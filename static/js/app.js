@@ -495,19 +495,17 @@
                 const dateLabel = observed
                     ? 'List dated ' + observed + (item.price_is_current ? '' : ' (over a year old)')
                     : (item.edition ? 'Edition ' + item.edition + ', list date not published' : 'List date not published');
+                const pill = item.price_is_current && Number(item.savings_percent || 0) > 0
+                    ? '<small class="savings-badge ' + savingsClass(item.savings_percent) + '">Save ' + Number(item.savings_percent).toFixed(0) + '%</small>'
+                    : Number(item.estimated_savings_percent || 0) > 0
+                        ? '<small class="savings-badge estimated">Est. save ' + Number(item.estimated_savings_percent).toFixed(0) + '%</small>'
+                        : '';
                 return '<div class="cheaper-item cheaper-item-static">' +
                     '<div class="cheaper-copy"><strong>' + escapeHtml(item.product_name || 'Generic product') + '</strong>' +
                     '<small>' + escapeHtml(item.composition || 'Same recorded composition') + ' · ' + escapeHtml(item.pack || 'Pack unknown') + '</small>' +
                     '<small>' + escapeHtml(dateLabel) + '</small></div>' +
-                    '<div class="cheaper-price"><span>Rs. ' + formatPrice(item.price) + '</span>' +
-                    (unitLabel ? '<small>' + escapeHtml(unitLabel) + '</small>' : '') +
-                    (item.price_is_current && Number(item.savings_percent || 0) > 0
-                        ? '<small class="savings-badge ' + savingsClass(item.savings_percent) + '">' + Number(item.savings_percent).toFixed(0) + '% lower per unit</small>'
-                        : Number(item.estimated_savings_percent || 0) > 0
-                            ? '<small class="savings-badge estimated">Est. ' + Number(item.estimated_savings_percent).toFixed(0) + '% lower per unit</small>'
-                            : '') +
-                    '<small>Jan Aushadhi list price</small>' +
-                    '</div></div>';
+                    cheaperPriceBlock(item.price, pill, 'Jan Aushadhi list price', unitLabel) +
+                    '</div>';
             }).join('') + '</div></div>';
 
         panel.innerHTML = catalogHtml + referenceHtml;
@@ -532,6 +530,16 @@
             '<button type="button" data-sort="pack" aria-pressed="false">Pack price</button></div>';
     }
 
+    // One price column for every card, always in the same order:
+    // price, saving pill, where the price comes from, price per unit.
+    function cheaperPriceBlock(price, pill, source, unitLabel) {
+        return '<div class="cheaper-price"><span class="cheaper-amount">Rs. ' + formatPrice(price) + '</span>' +
+            (pill || '') +
+            '<small class="cheaper-source">' + escapeHtml(source) + '</small>' +
+            (unitLabel ? '<small class="cheaper-unit">' + escapeHtml(unitLabel) + '</small>' : '') +
+            '</div>';
+    }
+
     function renderCheaperItems(items, priceKnown, mode) {
         const badges = alternativeBadges(items, priceKnown);
         return sortAlternatives(items, mode).map(function (item) {
@@ -539,22 +547,24 @@
                 ? 'Rs. ' + formatUnitPrice(item.price_per_unit_value) + ' per unit'
                 : (item.savings_basis === 'per pack' ? 'Same pack size' : '');
             const labels = badges[String(item.id)] || [];
+            const verified = priceKnown && item.savings_reliable;
+            const pill = verified
+                ? '<small class="savings-badge ' + savingsClass(item.savings_percent) + '">Save ' + Number(item.savings_percent).toFixed(0) + '%</small>'
+                : Number(item.estimated_savings_percent || 0) > 0
+                    ? '<small class="savings-badge estimated">Est. save ' + Number(item.estimated_savings_percent).toFixed(0) + '%</small>'
+                    : '';
+            const checked = verified ? formatDateValue(item.price_checked_at) : '';
+            const source = verified ? (checked ? 'Checked ' + checked : 'Recently checked price') : 'Catalog price (unverified)';
             return '<a class="cheaper-item" href="/medicine/' + encodeURIComponent(item.id) + '">' +
                 '<div class="cheaper-copy"><strong>' + escapeHtml(item.medicine_name) + '</strong>' +
                 '<small>' + escapeHtml(item.brand_name || item.manufacturer || 'Same composition') +
                 ' · ' + escapeHtml(item.pack_size || 'Pack unknown') + '</small>' +
+                '</div>' +
+                cheaperPriceBlock(item.price, pill, source, unitLabel) +
                 (labels.length ? '<span class="pick-badges">' + labels.map(function (label) {
                     return '<span class="pick-badge' + (label === 'Verified saving' ? ' verified' : '') + '">' + escapeHtml(label) + '</span>';
                 }).join('') + '</span>' : '') +
-                '</div>' +
-                '<div class="cheaper-price"><span>Rs. ' + formatPrice(item.price) + '</span>' +
-                (priceKnown && item.savings_reliable
-                    ? '<small class="savings-badge ' + savingsClass(item.savings_percent) + '">Save ' + Number(item.savings_percent).toFixed(0) + '%</small>'
-                    : (Number(item.estimated_savings_percent || 0) > 0
-                        ? '<small class="savings-badge estimated">Est. save ' + Number(item.estimated_savings_percent).toFixed(0) + '%</small>'
-                        : '') + '<small>Catalog price (unverified)</small>') +
-                (unitLabel ? '<small>' + escapeHtml(unitLabel) + '</small>' : '') +
-                '</div></a>';
+                '</a>';
         }).join('');
     }
 
