@@ -1683,6 +1683,20 @@ input[type="range"] {
     line-height: 1.65;
 }
 
+/* Detail page summary: a verified saving gets a green edge, a restricted class an amber one. */
+.ai-panel[data-tone="verified"] {
+    border-color: #86efac;
+}
+
+.ai-panel[data-tone="warning"] {
+    border-color: #fcd34d;
+    background: #fffbeb;
+}
+
+.questions-panel {
+    margin-top: 22px;
+}
+
 .chat-panel {
     display: flex;
     height: calc(100vh - 150px);
@@ -2895,4 +2909,53 @@ button,
 
 .uses-panel .uses-note {
     margin-top: 14px;
+}
+
+/* Labels on the same-composition list: true of the listed options only. */
+.pick-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 6px;
+}
+
+.pick-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--primary);
+    background: rgba(15, 118, 110, 0.1);
+}
+
+.pick-badge.verified {
+    color: #15803d;
+    background: #dcfce7;
+}
+
+.sort-toggle {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 12px;
+    font-size: 12px;
+    color: var(--muted);
+}
+
+.sort-toggle button {
+    padding: 4px 12px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: #fff;
+    color: var(--text);
+    font: inherit;
+    cursor: pointer;
+}
+
+.sort-toggle button[aria-pressed="true"] {
+    border-color: var(--primary);
+    background: var(--primary);
+    color: #fff;
 }
