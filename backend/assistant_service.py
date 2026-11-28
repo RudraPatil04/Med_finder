@@ -42,6 +42,11 @@ STOP_WORDS = {
     "medicines", "tablet", "tablets", "please", "info", "information", "than",
     "vs", "long", "term", "safe", "use", "used", "uses", "hello", "hi", "hey",
     "thanks", "thank", "you", "there", "need", "want", "know", "have", "has",
+    # Symptom words: a symptom question gets self-care guidance, never a product
+    # whose name happens to contain the symptom (e.g. "... Headache Relief").
+    "fever", "temperature", "headache", "headaches", "migraine", "cold", "colds",
+    "cough", "runny", "nose", "pain", "ache", "aches", "mild", "severe", "bad",
+    "pregnancy", "pregnant", "during", "while", "after", "before", "kids", "child",
 }
 
 
@@ -146,6 +151,15 @@ def process_assistant_query(user_message):
                 "(e.g. 112 / 108) right away. Do not delay professional hospital evaluation.")
 
     found_meds = find_medicines(user_message)
+
+    # Optional Gemini answer grounded in catalog data (off unless
+    # MEDFINDER_AI_ASSISTANT=1). Any failure returns None and the rules answer.
+    if found_meds:
+        from backend import ai_assistant
+        if ai_assistant.ai_enabled():
+            answer = ai_assistant.ai_answer(user_message.strip(), found_meds[0], DISCLAIMER)
+            if answer:
+                return answer
 
     if any(k in msg for k in ("generic", "alternative", "cheap", "substitute")):
         return _generic_answer(found_meds)

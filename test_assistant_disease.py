@@ -50,6 +50,12 @@ class AssistantTests(unittest.TestCase):
         self.assertNotIn("option", calls)
         self.assertEqual(found[0]["id"], 7087)
 
+    def test_symptom_words_never_look_up_products(self):
+        with mock.patch.object(assistant_service, "search_medicines") as search:
+            self.assertEqual(find_medicines("What can I take for a mild headache?"), [])
+            self.assertEqual(find_medicines("I have fever and cold"), [])
+        search.assert_not_called()
+
     def test_lookup_rejects_partial_word_hits(self):
         hellox = {"id": 1, "medicine_name": "Hellox 500mg Tablet", "composition": "Ofloxacin (500mg)"}
         with mock.patch.object(assistant_service, "search_medicines", return_value=[hellox]):
