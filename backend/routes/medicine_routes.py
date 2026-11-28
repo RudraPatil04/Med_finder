@@ -33,6 +33,7 @@ from backend.services.image_lookup import MAX_IDS_PER_REQUEST, fill_images
 
 from backend.services.external_api_service import pop_issues
 from backend.services.search_notice_service import related_by_ingredient, build_notice
+from backend.services.search_miss_log import record_miss
 
 medicine_bp = Blueprint("medicine", __name__)
 
@@ -69,6 +70,8 @@ def search():
     corrected = result.get("corrected_query")
     ingredient, related = related_by_ingredient(rows)
     notice = build_notice(corrected or keyword, rows, pop_issues(), ingredient, related)
+    if not rows:
+        record_miss(keyword)
 
     return jsonify({
         "success": True,
