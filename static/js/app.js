@@ -594,6 +594,8 @@
                 return;
             }
             container.innerHTML = renderMedicineDetail(data.data);
+            // Same list, same wording and same code as the search page.
+            loadCheaperAlternatives(data.data, state.searchRequestId);
         });
     }
 
@@ -1032,6 +1034,8 @@
         return '<section class="panel glass detail-visual">' +
             medicineVisual(m, "medicine-art", m.rx ? '<span class="rx-badge">Prescription</span>' : '') +
             '<div class="detail-price-panel"><div class="price' + (m.price ? '' : ' price-missing') + '">' + priceLabel(m) + '</div><div class="mrp">' + priceProvenance(m) + '</div></div>' +
+            buyActions(item.buy_links, m) +
+            '<section class="cheaper-panel detail-cheaper" id="cheaperAlternatives" hidden></section>' +
             '</section>' +
             '<section><article class="panel surface-only detail-copy">' +
             '<div class="badge-row"><span class="badge">' + escapeHtml(m.category || "Medicine") + '</span><span class="badge secondary">' + escapeHtml(m.form || "Form") + '</span>' +
@@ -1042,11 +1046,43 @@
             '</article>' +
             '<article class="ai-panel"><h2><span class="icon icon-sparkles"></span> AI Recommendation</h2><p>Review composition, strength, and prescription status carefully. Confirm alternatives with a doctor or pharmacist before switching medicines.</p></article>' +
             '<div class="detail-info-grid">' +
-            infoCard("Uses", "plus", [m.category || "Medicine information", "Verify dosage with a clinician"]) +
-            infoCard("Benefits", "sparkles", ["Compare price and composition", "Find related medicines from search"]) +
+            usesCard(item.ingredient_uses, item.ingredient_uses_note) +
             infoCard("Side Effects", "shield", ["Check the product label", "Report unusual reactions"]) +
             infoCard("Warnings", "heart", [m.rx ? "Prescription required" : "Follow label directions", "Consult a doctor before starting"]) +
             '</div></section>';
+    }
+
+    // Links out only: no order or payment happens in this app, and no stock is claimed.
+    function buyActions(links, m) {
+        links = links || {};
+        const onemg = links.onemg;
+        const map = links.pharmacy_map;
+        if (!onemg && !map) return '';
+        return '<div class="buy-actions">' +
+            (onemg ? '<a class="btn btn-gradient btn-block" href="' + escapeHtml(onemg.url) + '" target="_blank" rel="noopener noreferrer">' +
+                '<span class="icon icon-package"></span> Buy on 1mg</a>' : '') +
+            (map ? '<a class="btn btn-outline btn-block" href="' + escapeHtml(map.url) + '" target="_blank" rel="noopener noreferrer">' +
+                '<span class="icon icon-map"></span> Find a pharmacy near me</a>' : '') +
+            '<p class="buy-note">' +
+            (onemg ? (onemg.exact ? 'Opens this product on 1mg. ' : 'Opens 1mg search results for "' + escapeHtml(onemg.query) + '"; check the name and strength match. ') : '') +
+            (m.rx ? 'A prescription is needed to buy this medicine. ' : '') +
+            'Call the pharmacy to check stock.</p>' +
+            '</div>';
+    }
+
+    // Plain-language uses of each recorded ingredient, from a fixed local list.
+    // No reliable text for any ingredient: no box at all, rather than filler.
+    function usesCard(uses, note) {
+        const known = (uses || []).filter(function (u) { return u && u.use; });
+        if (!known.length) return '';
+        const unknown = (uses || []).filter(function (u) { return u && !u.use; });
+        const single = (uses || []).length === 1;
+        return '<article class="info-panel uses-panel"><h3><span class="icon icon-plus"></span>Uses</h3><ul>' +
+            known.map(function (u) {
+                return '<li>' + (single ? '' : '<strong>' + escapeHtml(u.ingredient) + ':</strong> ') + escapeHtml(u.use) + '</li>';
+            }).join('') +
+            (unknown.length ? '<li>No summary for ' + escapeHtml(unknown.map(function (u) { return u.ingredient; }).join(', ')) + '.</li>' : '') +
+            '</ul><p class="uses-note">' + escapeHtml(note || 'Ask your doctor or pharmacist.') + '</p></article>';
     }
 
     let scanCandidates = {};

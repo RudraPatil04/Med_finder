@@ -1335,3 +1335,21 @@ long-tail brands PharmEasy does not list, or lists without a photo; the matching
 Prices: `etl/clear_placeholder_prices.py --apply` set 61 source-dataset prices of exactly Rs. 1 to NULL
 (same-composition products cost a median 11x more); old values are in `placeholder_prices`,
 `--restore` puts them back. Re-run after `etl/build_database.py`.
+
+## 2026-11-28 — Medicine detail page: buy links, alternatives, ingredient uses
+
+- `/api/medicine/<id>` now also returns `buy_links` (`onemg`, `pharmacy_map`), `ingredient_uses`
+  and `ingredient_uses_note`. Display only: matching, ranking and prices are unchanged.
+- **Buy on 1mg**: the catalog holds no 1mg product id or page URL (the source CSV gives only
+  `Image_URL`, a 1mg image-CDN hash that does not identify a product page; `api_record_id` is a
+  DrugDB/PharmEasy id), and 1mg blocks server-side lookups. So every link is a 1mg search for
+  the row's own name plus strength (`exact: False`); the UI says to check name and strength.
+  US-only rows (`medicine_category = External`) get no 1mg link. Links open in a new tab with
+  `rel="noopener noreferrer"`. No order, payment or stock claim happens in the app.
+- **Find a pharmacy near me**: Google Maps search `pharmacy near me`; copy says to call for stock.
+- **Alternatives under the price**: the detail page calls the same `loadCheaperAlternatives`
+  used on the search page (same `/api/substitutes` call, wording and honesty labels).
+- **Uses**: `backend/ingredient_uses.py` maps ~150 common ingredients (plus spelling and salt
+  variants) to one conservative plain-language line from their standard labelled indications.
+  No entry for any ingredient: the Uses box is hidden. The filler "Uses"/"Benefits" boxes are gone.
+- Tests: `test_detail_page.py` (14).

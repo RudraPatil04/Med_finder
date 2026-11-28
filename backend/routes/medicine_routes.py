@@ -24,6 +24,7 @@ from backend.ocr_service import parse_prescription_medicines
 from backend.recommendation_service import get_substitutes
 from backend.services.india_medicine_api import search_live_alternatives
 from backend.medicine_data import parse_composition, restricted_reason
+from backend.ingredient_uses import USES_NOTE, buy_links, ingredient_uses
 from backend.services.price_comparison_service import compare_current_prices
 from backend.services.price_enrichment_service import persist_reference_price
 from backend.services.enrichment_worker import request_enrichment
@@ -126,9 +127,14 @@ def medicine_details(medicine_id):
     if needs_enrichment:
         request_enrichment(medicine_id)
 
+    data = dict(medicine)
+    # Display-only extras for the detail page; matching and prices are untouched.
+    data["ingredient_uses"] = ingredient_uses(data.get("composition"))
+    data["ingredient_uses_note"] = USES_NOTE
+    data["buy_links"] = buy_links(data)
     return jsonify({
         "success": True,
-        "data": dict(medicine)
+        "data": data
     })
 
 
