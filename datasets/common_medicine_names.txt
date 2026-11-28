@@ -1,0 +1,283 @@
+# Common medicine names in India, one per line. Used by: python -m etl.check_coverage
+# Generic names
+Paracetamol
+Ibuprofen
+Diclofenac
+Aceclofenac
+Naproxen
+Mefenamic Acid
+Tramadol
+Aspirin
+Cetirizine
+Levocetirizine
+Fexofenadine
+Montelukast
+Loratadine
+Chlorpheniramine
+Phenylephrine
+Amoxicillin
+Amoxicillin Clavulanate
+Azithromycin
+Cefixime
+Cefuroxime
+Cefpodoxime
+Ciprofloxacin
+Ofloxacin
+Levofloxacin
+Doxycycline
+Clarithromycin
+Clindamycin
+Metronidazole
+Nitrofurantoin
+Linezolid
+Fluconazole
+Itraconazole
+Terbinafine
+Albendazole
+Ivermectin
+Acyclovir
+Valacyclovir
+Oseltamivir
+Pantoprazole
+Omeprazole
+Rabeprazole
+Esomeprazole
+Ranitidine
+Famotidine
+Domperidone
+Ondansetron
+Metoclopramide
+Dicyclomine
+Loperamide
+Lactulose
+Ursodeoxycholic Acid
+Metformin
+Glimepiride
+Gliclazide
+Sitagliptin
+Vildagliptin
+Teneligliptin
+Dapagliflozin
+Empagliflozin
+Pioglitazone
+Insulin Glargine
+Amlodipine
+Telmisartan
+Losartan
+Olmesartan
+Ramipril
+Enalapril
+Atenolol
+Metoprolol
+Bisoprolol
+Propranolol
+Nifedipine
+Hydrochlorothiazide
+Furosemide
+Torsemide
+Spironolactone
+Atorvastatin
+Rosuvastatin
+Fenofibrate
+Clopidogrel
+Ticagrelor
+Prasugrel
+Rivaroxaban
+Apixaban
+Isosorbide Mononitrate
+Levothyroxine
+Prednisolone
+Methylprednisolone
+Dexamethasone
+Hydrocortisone
+Budesonide
+Salbutamol
+Deriphyllin
+Escitalopram
+Sertraline
+Fluoxetine
+Paroxetine
+Amitriptyline
+Duloxetine
+Alprazolam
+Clonazepam
+Etizolam
+Zolpidem
+Olanzapine
+Quetiapine
+Risperidone
+Aripiprazole
+Gabapentin
+Pregabalin
+Levetiracetam
+Sodium Valproate
+Carbamazepine
+Phenytoin
+Baclofen
+Thiocolchicoside
+Sumatriptan
+Tranexamic Acid
+Folic Acid
+Methylcobalamin
+Cholecalciferol
+Calcium Carbonate
+Ferrous Ascorbate
+Multivitamin
+Sildenafil
+Tamsulosin
+Finasteride
+Methotrexate
+Hydroxychloroquine
+Colchicine
+Allopurinol
+Febuxostat
+# Popular brands
+Dolo 650
+Calpol
+Crocin
+Combiflam
+Saridon
+Disprin
+Zerodol SP
+Zerodol P
+Hifenac P
+Ultracet
+Allegra
+Cetzine
+Okacet
+Levocet
+Montek LC
+Montair LC
+Sinarest
+Vicks Action 500
+Augmentin
+Mox
+Azithral
+Azee
+Taxim O
+Zifi
+Ciplox
+Oflox
+Norflox TZ
+Monocef
+Flagyl
+Metrogyl
+Candiforce
+Forcan
+Pan D
+Pantocid
+Pantop D
+Pan 40
+Rantac
+Aciloc
+Omez
+Razo D
+Rabekind
+Nexpro
+Digene
+Gelusil
+Eno
+Cyclopam
+Meftal Spas
+Emeset
+Vomikind
+Ondem
+Domstal
+Lomotil
+Cremaffin
+Duphalac
+Udiliv
+Glycomet
+Glycomet GP
+Gluconorm G
+Amaryl
+Janumet
+Istamet
+Galvus Met
+Jardiance
+Forxiga
+Telma
+Telma H
+Telma AM
+Telmikind AM
+Telmikind H
+Amlong
+Stamlo
+Stamlo Beta
+Losar
+Olmezest
+Cardace
+Concor
+Met XL
+Ciplar
+Lasix
+Dytor
+Aldactone
+Atorva
+Lipitor
+Rosuvas
+Crestor
+Ecosprin
+Clopilet
+Brilinta
+Xarelto
+Eliquis
+Thyronorm
+Eltroxin
+Wysolone
+Omnacortil
+Medrol
+Dexona
+Asthalin
+Budecort
+Foracort
+Seroflo
+Nexito
+Stalopam
+Fludac
+Restyl
+Zapiz
+Lonazep
+Rivotril
+Etilaam
+Pregabid
+Gabapin NT
+Lyrica
+Levipil
+Valparin
+Tegretol
+Eptoin
+Liofen
+Myospaz
+Pacimol
+Neurobion Forte
+Becosules
+Supradyn
+Revital
+Zincovit
+Shelcal
+Calcirol
+Uprise D3
+Livogen
+Orofer XT
+Folvite
+Evion
+Limcee
+Liv 52
+Manforce
+Urimax
+Zyloric
+Hcqs
+Volini
+Moov
+Betadine
+Soframycin
+Thrombophob
+Burnol
+Otrivin
+Benadryl
+Ascoril
+Grilinctus
+Alex
+Electral
+ORS
