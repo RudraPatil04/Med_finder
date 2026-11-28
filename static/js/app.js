@@ -6,14 +6,13 @@
         filtered: [],
         view: "grid",
         category: "All",
-        maxPrice: 1000,
+        maxPrice: Infinity,
         rxOnly: false,
         page: 1,
         pageSize: 12,
         searchRequestId: 0
     };
 
-    const gradients = ["gradient-a", "gradient-b", "gradient-c", "gradient-d", "gradient-e", "gradient-f"];
 
     document.addEventListener("DOMContentLoaded", function () {
         setupNavigation();
@@ -305,8 +304,10 @@
         const maxPrice = document.getElementById("maxPrice");
         const maxPriceLabel = document.getElementById("maxPriceLabel");
         maxPrice.addEventListener("input", function () {
-            state.maxPrice = Number(maxPrice.value);
-            maxPriceLabel.textContent = "Rs. " + state.maxPrice;
+            const value = Number(maxPrice.value);
+            const any = value >= Number(maxPrice.max);
+            state.maxPrice = any ? Infinity : value;
+            maxPriceLabel.textContent = any ? "Any price" : "Up to Rs. " + value;
             filterResults();
         });
 
@@ -346,7 +347,7 @@
         filterResults();
     }
 
-    async function runSearch(query) {
+    async function runSearch(query, exact) {
         const container = document.getElementById("searchResults");
         const count = document.getElementById("resultCount");
         if (!query) {
@@ -357,9 +358,10 @@
         container.innerHTML = skeletonCards(6);
         count.textContent = "Searching…";
         const requestId = ++state.searchRequestId;
-        const data = await fetchJson("/api/search?q=" + encodeURIComponent(query));
+        const data = await fetchJson("/api/search?q=" + encodeURIComponent(query) + (exact ? "&exact=1" : ""));
         // Ignore older responses when a user types a more specific query quickly.
         if (requestId !== state.searchRequestId) return;
+        renderSearchCorrection(data && data.corrected_query, query);
         if (!data || !data.success) {
             container.innerHTML = emptyState("No results found", "Try a medicine name, brand, or composition.");
             count.textContent = "0 results";
@@ -367,8 +369,50 @@
         }
         state.medicines = data.data;
         state.page = 1;
+        renderSearchNotice(data.notice, data.related);
         filterResults();
         loadCheaperAlternatives(data.data[0], requestId);
+    }
+
+    // A misspelled search is retried with catalog spelling. Say plainly which
+    // words were searched: a look-alike name can be a different medicine.
+    function renderSearchCorrection(corrected, original) {
+        const box = document.getElementById("searchCorrection");
+        if (!box) return;
+        if (!corrected) {
+            box.hidden = true;
+            box.innerHTML = "";
+            return;
+        }
+        box.innerHTML = 'No exact match for <strong>' + escapeHtml(original) + '</strong>. Showing results for <strong>' +
+            escapeHtml(corrected) + '</strong>; check the name matches your prescription. ' +
+            '<button type="button" class="link-button" data-exact-search>Search only for "' + escapeHtml(original) + '"</button>';
+        box.hidden = false;
+        box.querySelector("[data-exact-search]").addEventListener("click", function () {
+            runSearch(original, true);
+        });
+    }
+
+    // Explains why a search has no price / no match, and lists same-ingredient
+    // Indian products when one could be found. Never claims they are substitutes.
+    function renderSearchNotice(notice, related) {
+        const box = document.getElementById("searchNotice");
+        if (!box) return;
+        if (!notice) {
+            box.hidden = true;
+            box.innerHTML = "";
+            return;
+        }
+        let html = '<strong>' + escapeHtml(notice.title || "Please note") + '</strong><p>' + escapeHtml(notice.message) + '</p>';
+        if (related && related.length) {
+            html += '<ul class="notice-related">' + related.map(function (r) {
+                return '<li><a href="/medicine/' + encodeURIComponent(r.id) + '">' + escapeHtml(r.medicine_name) + '</a> · ' +
+                    escapeHtml([r.strength, r.dosage_form].filter(Boolean).join(" · ")) +
+                    ' · Rs. ' + escapeHtml(formatPrice(r.price)) + ' (catalog price)</li>';
+            }).join("") + '</ul>';
+        }
+        box.innerHTML = html;
+        box.hidden = false;
     }
 
     function clearCheaperAlternatives() {
@@ -384,8 +428,12 @@
         clearCheaperAlternatives();
         if (!medicine || !medicine.id) return;
 
+        // The server may fetch current pharmacy prices first, which takes a few seconds.
+        panel.innerHTML = '<p class="cheaper-loading" role="status">Checking current prices for cheaper same-composition options…</p>';
+        panel.hidden = false;
         const data = await fetchJson("/api/substitutes/" + encodeURIComponent(medicine.id) + "?limit=6");
         if (requestId !== state.searchRequestId) return;
+        clearCheaperAlternatives();
         if (!data || !data.success) return;
 
         const cheaper = (data.same_composition_alternatives || []).filter(function (item) {
@@ -400,20 +448,27 @@
         if (!cheaper.length && !options.length && !referenceOptions.length) return;
 
         const priceKnown = cheaper.length > 0;
+        const estimated = !priceKnown && options.some(function (item) {
+            return Number(item.estimated_savings_percent || 0) > 0;
+        });
         const referencePriceMissing = !data.reference_price_available;
         const referencePriceCurrent = Boolean(data.reference_price_is_current);
         const eyebrow = priceKnown
             ? 'Save on the same content'
-            : referencePriceMissing
-                ? 'No recorded price for this medicine'
-                : referencePriceCurrent ? 'No cheaper current listing found' : 'Current price not confirmed';
+            : estimated
+                ? 'Estimated saving (catalog prices)'
+                : referencePriceMissing
+                    ? 'No recorded price for this medicine'
+                    : referencePriceCurrent ? 'No cheaper current listing found' : 'Current price not confirmed';
         const blurb = priceKnown
-            ? 'Same recorded ingredients and strength, with current listing prices on both sides. These are catalog matches, not verified as therapeutically interchangeable.'
+            ? 'Same ingredients and strength, both prices checked recently. Not proven interchangeable: ask your doctor or pharmacist.'
+            : estimated
+                ? 'Same ingredients, strength and form. Savings are estimates from old catalog prices; check at your pharmacy. Ask your doctor or pharmacist before switching.'
             : referencePriceMissing
-                ? 'This medicine has no recorded price, so these are the cheapest catalog products with the same recorded ingredients, strength and form. Their prices are unverified; confirm with a pharmacist.'
+                ? 'No price for this medicine. These have the same ingredients, strength and form, at old catalog prices. Ask your doctor or pharmacist.'
                 : referencePriceCurrent
-                    ? 'This price is a current listing, but no same-composition product with a current listing price is cheaper. The options below carry old, unverified catalog prices, so no saving is claimed.'
-                    : 'The price recorded for this medicine is an old catalog price, not a confirmed current listing, so no saving is claimed. These products share the recorded ingredients, strength and form; their catalog prices are unverified and they are not verified interchangeable.';
+                    ? 'No cheaper current price found. The options below have old catalog prices, so no saving is claimed.'
+                    : 'Same ingredients, strength and form. Prices are old catalog prices, so no saving is claimed. Ask your doctor or pharmacist before switching.';
         const items = priceKnown ? cheaper : options;
         const catalogHtml = !items.length ? '' : '<div class="cheaper-head">' +
             '<div><p class="eyebrow">' + eyebrow + '</p>' +
@@ -433,16 +488,18 @@
                     '<div class="cheaper-price"><span>Rs. ' + formatPrice(item.price) + '</span>' +
                     (priceKnown && item.savings_reliable
                         ? '<small class="savings-badge ' + savingsClass(item.savings_percent) + '">Save ' + Number(item.savings_percent).toFixed(0) + '%</small>'
-                        : '<small>Catalog price (unverified)</small>') +
+                        : (Number(item.estimated_savings_percent || 0) > 0
+                            ? '<small class="savings-badge estimated">Est. save ' + Number(item.estimated_savings_percent).toFixed(0) + '%</small>'
+                            : '') + '<small>Catalog price (unverified)</small>') +
                     (unitLabel ? '<small>' + escapeHtml(unitLabel) + '</small>' : '') +
                     '</div></a>';
             }).join('') + '</div>';
 
-        // A published generic list price prices a different product. It is shown as a
-        // price reference only, so it never claims a saving over the searched brand.
+        // A published generic list price prices a different product. A per-unit
+        // difference is shown only when the list and this brand's price are both current.
         const referenceHtml = !referenceOptions.length ? '' : '<div class="cheaper-reference">' +
             '<p class="eyebrow">Jan Aushadhi list price</p>' +
-            '<p class="cheaper-reference-note">Published generic list price for a product with the same recorded ingredients, strength and form. It is not a listing of this brand, and it does not show that the products can be substituted.</p>' +
+            '<p class="cheaper-reference-note">Government generic price for the same ingredients and strength. Not this brand, and not proof they can be swapped.</p>' +
             '<div class="cheaper-list">' + referenceOptions.slice(0, 3).map(function (item) {
                 const unit = item.unit || 'unit';
                 const unitLabel = item.price_per_unit
@@ -458,6 +515,11 @@
                     '<small>' + escapeHtml(dateLabel) + '</small></div>' +
                     '<div class="cheaper-price"><span>Rs. ' + formatPrice(item.price) + '</span>' +
                     (unitLabel ? '<small>' + escapeHtml(unitLabel) + '</small>' : '') +
+                    (item.price_is_current && Number(item.savings_percent || 0) > 0
+                        ? '<small class="savings-badge ' + savingsClass(item.savings_percent) + '">' + Number(item.savings_percent).toFixed(0) + '% lower per unit</small>'
+                        : Number(item.estimated_savings_percent || 0) > 0
+                            ? '<small class="savings-badge estimated">Est. ' + Number(item.estimated_savings_percent).toFixed(0) + '% lower per unit</small>'
+                            : '') +
                     '<small>Jan Aushadhi list price</small>' +
                     '</div></div>';
             }).join('') + '</div></div>';
@@ -473,10 +535,9 @@
 
     function filterResults() {
         state.filtered = state.medicines.filter(function (item) {
-            const category = (item.medicine_category || "").toLowerCase();
             const price = Number(item.price || 0);
             const rx = String(item.prescription_required || "").toLowerCase();
-            const categoryOk = state.category === "All" || category.includes(state.category.toLowerCase());
+            const categoryOk = state.category === "All" || formFamily(item.dosage_form || item.form) === state.category;
             const priceOk = !price || price <= state.maxPrice;
             const rxOk = !state.rxOnly || rx === "true" || rx === "1" || rx.includes("required");
             return categoryOk && priceOk && rxOk;
@@ -496,7 +557,9 @@
         container.dataset.viewMode = state.view;
 
         if (!state.filtered.length) {
-            container.innerHTML = emptyState("No medicines match these filters", "Try a broader search or increase the maximum price.");
+            container.innerHTML = state.medicines.length
+                ? emptyState("No medicines match these filters", "Try another form, or move the price slider to Any price.")
+                : emptyState("No medicines found", "Check the spelling, or search by brand or ingredient.");
             pagination.hidden = true;
             return;
         }
@@ -550,6 +613,7 @@
         const ocrText = document.getElementById("ocrText");
         const ocrProvider = document.getElementById("ocrProvider");
         const ocrProviderLabels = {
+            "gemini": "Google Gemini",
             "google-vision": "Google Vision",
             "tesseract": "Tesseract",
             "pdf-text-layer": "PDF text layer"
@@ -600,14 +664,131 @@
             announce("Scanner reset. Choose a prescription to scan.");
         });
 
-        detectedList.addEventListener("click", function (event) {
-            const remove = event.target.closest("[data-remove-detected]");
-            if (!remove) return;
-            const row = remove.closest("[data-detected]");
-            if (row) row.remove();
-            if (!detectedList.querySelector("[data-detected]")) {
-                detectedList.innerHTML = emptyState("No medicines left", "Scan another prescription or search manually.");
+        function updateConfirmSummary() {
+            const summary = document.getElementById("confirmSummary");
+            if (!summary) return;
+            const rows = detectedList.querySelectorAll("[data-detected]");
+            const confirmed = detectedList.querySelectorAll("[data-detected].confirmed");
+            summary.hidden = rows.length === 0;
+            summary.textContent = confirmed.length + " of " + rows.length + " confirmed. Check each one against the paper prescription.";
+        }
+
+        function addDetected(item, confirmed) {
+            const empty = detectedList.querySelector(".empty-state");
+            if (empty) empty.remove();
+            detectedList.insertAdjacentHTML("beforeend", renderDetectedMedicine(item, confirmed));
+            detectedPanel.hidden = false;
+            updateConfirmSummary();
+        }
+
+        function replaceDetected(row, item) {
+            row.insertAdjacentHTML("afterend", renderDetectedMedicine(item, true));
+            row.remove();
+            updateConfirmSummary();
+        }
+
+        async function runCorrection(form) {
+            const input = form.querySelector("input");
+            const results = form.parentElement.querySelector("[data-correct-results]");
+            const query = input.value.trim();
+            if (!query) return;
+            results.innerHTML = '<small>Searching…</small>';
+            const response = await fetchJson("/api/search?q=" + encodeURIComponent(query));
+            const rows = (response && response.data) || [];
+            if (!rows.length) {
+                results.innerHTML = '<small>No catalog medicine found for "' + escapeHtml(query) + '".</small>';
+                announce("No catalog medicine found for " + query + ".");
+                return;
             }
+            results.innerHTML = rows.slice(0, 5).map(function (row) {
+                return scanChip(registerCandidate({
+                    medicine_id: row.id,
+                    name: row.medicine_name,
+                    brand: row.brand_name,
+                    strength: row.strength,
+                    dosage_form: row.dosage_form,
+                    price: row.price,
+                    prescription_required: row.prescription_required,
+                    matched_text: query,
+                    match_type: "user",
+                    source_line: form.dataset.sourceLine || ""
+                }), row.medicine_name + (row.strength ? " · " + row.strength : ""), null);
+            }).join("");
+            announce(Math.min(rows.length, 5) + " catalog options found. Choose the one on the prescription.");
+        }
+
+        function handleScanClick(event) {
+            const pick = event.target.closest("[data-pick]");
+            if (pick) {
+                const item = Object.assign({}, scanCandidates[pick.dataset.pick] || {});
+                if (!item.medicine_id && item.query) {
+                    window.location.href = "/search?q=" + encodeURIComponent(item.query);
+                    return;
+                }
+                item.match_type = "user";
+                const detectedRow = pick.closest("[data-detected]");
+                const unmatchedRow = pick.closest("[data-unmatched]");
+                if (detectedRow) {
+                    item.source_line = item.source_line || detectedRow.dataset.sourceLine || "";
+                    replaceDetected(detectedRow, item);
+                } else {
+                    if (unmatchedRow) {
+                        item.source_line = item.source_line || unmatchedRow.dataset.sourceLine || "";
+                        unmatchedRow.remove();
+                        if (!unmatchedList.querySelector("[data-unmatched]")) unmatchedPanel.hidden = true;
+                    }
+                    addDetected(item, true);
+                }
+                announce((item.name || "Medicine") + " confirmed.");
+                return;
+            }
+
+            const confirm = event.target.closest("[data-confirm-detected]");
+            if (confirm) {
+                const row = confirm.closest("[data-detected]");
+                const on = !row.classList.contains("confirmed");
+                row.classList.toggle("confirmed", on);
+                confirm.textContent = on ? "Confirmed ✓" : "Confirm";
+                confirm.setAttribute("aria-pressed", on ? "true" : "false");
+                updateConfirmSummary();
+                announce((row.dataset.name || "Medicine") + (on ? " confirmed." : " no longer confirmed."));
+                return;
+            }
+
+            const change = event.target.closest("[data-change-detected]");
+            if (change) {
+                const row = change.closest("[data-detected], [data-unmatched]");
+                const panel = row.querySelector("[data-correct-panel]");
+                panel.hidden = !panel.hidden;
+                if (!panel.hidden) {
+                    const input = panel.querySelector("input");
+                    input.focus();
+                    input.select();
+                }
+                return;
+            }
+
+            const remove = event.target.closest("[data-remove-detected]");
+            if (remove) {
+                const row = remove.closest("[data-detected]");
+                if (row) row.remove();
+                if (!detectedList.querySelector("[data-detected]")) {
+                    detectedList.innerHTML = emptyState("No medicines left", "Scan another prescription or search manually.");
+                }
+                updateConfirmSummary();
+            }
+        }
+
+        function handleScanSubmit(event) {
+            const form = event.target.closest("[data-correct-form]");
+            if (!form) return;
+            event.preventDefault();
+            runCorrection(form);
+        }
+
+        [detectedList, unmatchedList].forEach(function (list) {
+            list.addEventListener("click", handleScanClick);
+            list.addEventListener("submit", handleScanSubmit);
         });
 
         function showExtractedText(text, provider) {
@@ -664,13 +845,15 @@
 
             setText("scanStateLabel", "Scan complete");
             setText("scanTitle", response.count ? "Medicines detected" : "No catalog match found");
-            setText("scanCopy", response.message || "Review the detected items below.");
+            setText("scanCopy", (response.warning ? response.warning + " " : "") + (response.message || "Review the detected items below."));
 
             const items = response.data || [];
+            scanCandidates = {};
             detectedList.innerHTML = items.length
-                ? items.map(renderDetectedMedicine).join("")
+                ? items.map(function (item) { return renderDetectedMedicine(item, false); }).join("")
                 : emptyState("No medicines matched", "Check the printed lines below or search manually.");
             detectedPanel.hidden = false;
+            updateConfirmSummary();
 
             const unmatched = response.unmatched_lines || [];
             unmatchedList.innerHTML = unmatched.map(renderUnmatchedLine).join("");
@@ -817,47 +1000,43 @@
         }
     }
 
-    function renderMedicineCard(item, index) {
+    function renderMedicineCard(item) {
         const m = normalizeMedicine(item);
-        const gradient = gradients[(Number(m.id) + (index || 0)) % gradients.length];
         return '<div class="medicine-card-wrapper">' +
             '<a class="medicine-card card-hover" href="/medicine/' + encodeURIComponent(m.id) + '">' +
-            '<div class="medicine-visual ' + gradient + '">' +
-            (m.rx ? '<span class="rx-badge">Rx</span>' : '') +
-            '<span class="form-badge">' + escapeHtml(m.form || "Med") + '</span>' +
-            '<span class="icon icon-pill"></span></div>' +
+            medicineVisual(m, "medicine-visual",
+                (m.rx ? '<span class="rx-badge">Rx</span>' : '') +
+                '<span class="form-badge">' + escapeHtml(m.form || "Medicine") + '</span>') +
             '<div class="medicine-body">' +
             '<small>' + escapeHtml(m.brand) + '</small>' +
             '<h3>' + escapeHtml(m.name) + '</h3>' +
-            '<small>' + escapeHtml(m.manufacturer || m.category || "MED FINDER") + '</small>' +
-            '<div class="medicine-meta"><span>' + escapeHtml(m.category || "Medicine") + '</span></div>' +
-            '<div class="price-row"><div><div class="price">Rs. ' + escapeHtml(formatPrice(m.price)) + '</div><div class="mrp">' + priceProvenance(m) + '</div></div><span class="view-pill">View</span></div>' +
+            (m.manufacturer ? '<small>' + escapeHtml(m.manufacturer) + '</small>' : '') +
+            '<div class="medicine-meta">' + metaChips(m) + '</div>' +
+            '<div class="price-row"><div><div class="price' + (m.price ? '' : ' price-missing') + '">' + priceLabel(m) + '</div><div class="mrp">' + priceProvenance(m) + '</div></div><span class="view-pill">View</span></div>' +
             '</div></a>' +
             '<button class="btn btn-outline btn-compare" type="button" data-compare-id="' + m.id + '" onclick="event.preventDefault(); showComparison(' + m.id + ', \'' + escapeHtml(m.name).replace(/'/g, "\\'") + '\')"><span class="icon icon-shuffle"></span> Compare Prices</button>' +
             '</div>';
     }
 
-    function renderMedicineRow(item, index) {
+    function renderMedicineRow(item) {
         const m = normalizeMedicine(item);
-        const gradient = gradients[(Number(m.id) + (index || 0)) % gradients.length];
         return '<a class="result-row card-hover" href="/medicine/' + encodeURIComponent(m.id) + '">' +
-            '<div class="medicine-visual ' + gradient + '"><span class="icon icon-pill"></span></div>' +
-            '<div><h3>' + escapeHtml(m.name) + '</h3><p>' + escapeHtml(m.brand) + ' | ' + escapeHtml(m.composition || m.category || "Medicine") + '</p></div>' +
-            '<div class="price-row"><div><div class="price">Rs. ' + escapeHtml(formatPrice(m.price)) + '</div><div class="mrp">' + priceProvenance(m) + '</div></div></div>' +
+            medicineVisual(m, "medicine-visual", "") +
+            '<div><h3>' + escapeHtml(m.name) + '</h3><p>' + escapeHtml([m.brand, m.strength, m.packSize].filter(Boolean).join(" · ")) + '</p></div>' +
+            '<div class="price-row"><div><div class="price' + (m.price ? '' : ' price-missing') + '">' + priceLabel(m) + '</div><div class="mrp">' + priceProvenance(m) + '</div></div></div>' +
             '</a>';
     }
 
     function renderMedicineDetail(item) {
         const m = normalizeMedicine(item);
-        const gradient = gradients[Number(m.id) % gradients.length];
         return '<section class="panel glass detail-visual">' +
-            '<div class="medicine-art ' + gradient + '"><span class="icon icon-pill"></span>' + (m.rx ? '<span class="rx-badge">Prescription</span>' : '') + '</div>' +
-            '<div class="detail-price-panel"><div class="price">Rs. ' + escapeHtml(formatPrice(m.price)) + '</div><div class="mrp">' + priceProvenance(m) + '</div></div>' +
+            medicineVisual(m, "medicine-art", m.rx ? '<span class="rx-badge">Prescription</span>' : '') +
+            '<div class="detail-price-panel"><div class="price' + (m.price ? '' : ' price-missing') + '">' + priceLabel(m) + '</div><div class="mrp">' + priceProvenance(m) + '</div></div>' +
             '</section>' +
             '<section><article class="panel surface-only detail-copy">' +
             '<div class="badge-row"><span class="badge">' + escapeHtml(m.category || "Medicine") + '</span><span class="badge secondary">' + escapeHtml(m.form || "Form") + '</span>' +
             (m.apiSource ? '<span class="badge secondary">Live catalog record</span>' : '') + '</div>' +
-            '<h1>' + escapeHtml(m.name) + '</h1><p class="subline">' + escapeHtml(m.brand || "Brand") + ' | by ' + escapeHtml(m.manufacturer || "MED FINDER") + '</p>' +
+            '<h1>' + escapeHtml(m.name) + '</h1><p class="subline">' + escapeHtml(m.brand || "Brand") + (m.manufacturer ? ' | by ' + escapeHtml(m.manufacturer) : '') + '</p>' +
             (m.apiSource ? '<p class="subline">Added from the ' + escapeHtml(m.apiSource) + '.' + (Number(m.price) > 0 ? ' The price shown is the live listing price from that catalog.' : ' No price is recorded for this product.') + '</p>' : '') +
             '<dl class="field-grid"><div><dt>Strength</dt><dd>' + escapeHtml(m.strength || "-") + '</dd></div><div><dt>Form</dt><dd>' + escapeHtml(m.form || "-") + '</dd></div><div><dt>Composition</dt><dd>' + escapeHtml(m.composition || "-") + '</dd></div></dl>' +
             '</article>' +
@@ -870,7 +1049,48 @@
             '</div></section>';
     }
 
-    function renderDetectedMedicine(item) {
+    let scanCandidates = {};
+    let scanCandidateSeq = 0;
+
+    function registerCandidate(item) {
+        scanCandidateSeq += 1;
+        const key = "c" + scanCandidateSeq;
+        scanCandidates[key] = item;
+        return key;
+    }
+
+    function scoreText(item) {
+        const parts = [];
+        if (item.ocr_confidence != null) parts.push("Read confidence " + Math.round(item.ocr_confidence) + "%");
+        if (item.match_score != null) parts.push("Name similarity " + Math.round(item.match_score) + "%");
+        return parts.join(" · ");
+    }
+
+    function scanChip(key, label, score) {
+        return '<button class="btn btn-outline btn-sm scan-chip" type="button" data-pick="' + key + '">' +
+            escapeHtml(label) + (score != null ? ' <span class="chip-score">' + Math.round(score) + '%</span>' : '') + '</button>';
+    }
+
+    function suggestionChips(list, sourceLine) {
+        return (list || []).map(function (entry) {
+            const label = entry.name + (entry.medicine_id ? "" : " (search)");
+            return scanChip(registerCandidate(Object.assign({}, entry, {
+                match_score: entry.score,
+                source_line: sourceLine
+            })), label, entry.score);
+        }).join("");
+    }
+
+    function correctPanel(query, sourceLine) {
+        return '<div class="correct-panel" data-correct-panel hidden>' +
+            '<form class="correct-form" data-correct-form data-source-line="' + escapeHtml(sourceLine || "") + '">' +
+            '<label class="sr-only">Type the medicine name as written</label>' +
+            '<input type="search" value="' + escapeHtml(query || "") + '" placeholder="Type the medicine name">' +
+            '<button class="btn btn-gradient btn-sm" type="submit">Find</button></form>' +
+            '<div class="scan-chips" data-correct-results></div></div>';
+    }
+
+    function renderDetectedMedicine(item, confirmed) {
         const name = item.name || item.medicine_name || "Detected medicine";
         const details = [item.strength, item.dosage_form].filter(Boolean).join(" · ");
         const dosage = item.dosage_text || "Dosage not detected - confirm on the prescription";
@@ -878,22 +1098,33 @@
         const medicineId = item.medicine_id || item.id;
         const exact = item.match_type === "exact";
         const close = item.match_type === "possible";
+        const user = item.match_type === "user";
         const strengthDiffers = item.strength_match === false;
-        const matchLabel = strengthDiffers
-            ? "Possible match — check strength"
-            : exact ? "Name match" : close ? "Close match — verify" : "Possible match";
-        const badgeClass = strengthDiffers
-            ? "warning"
-            : exact ? "exact" : close ? "possible" : "partial";
-        return '<div class="detected-item" data-detected><span class="feature-icon soft"><span class="icon icon-pill"></span></span>' +
+        const lowRead = item.ocr_confidence != null && item.ocr_confidence < 70;
+        const matchLabel = user ? "Chosen by you"
+            : strengthDiffers ? "Possible match — check strength"
+            : exact ? (lowRead ? "Name match — faint text" : "Name match")
+            : close ? "Close match — verify" : "Possible match";
+        const badgeClass = user ? "exact"
+            : strengthDiffers ? "warning"
+            : exact && !lowRead ? "exact" : close ? "possible" : "partial";
+        const scores = scoreText(item);
+        const alternatives = suggestionChips(item.alternatives, item.source_line);
+        return '<div class="detected-item' + (confirmed ? ' confirmed' : '') + '" data-detected data-name="' + escapeHtml(name) + '" data-source-line="' + escapeHtml(item.source_line || "") + '">' +
+            '<span class="feature-icon soft"><span class="icon icon-pill"></span></span>' +
             '<div class="min-grow"><strong>' + escapeHtml(name) + '</strong>' +
             (details ? '<small>' + escapeHtml(details) + '</small>' : '') +
             '<small>' + escapeHtml(dosage) + '</small>' +
-            '<small class="ocr-source">' + escapeHtml(printed) + '</small></div>' +
+            '<small class="ocr-source">' + escapeHtml(printed) + '</small>' +
+            (scores ? '<small class="scan-scores">' + escapeHtml(scores) + '</small>' : '') +
+            (alternatives ? '<div class="scan-chips"><small>Or did the prescription say:</small>' + alternatives + '</div>' : '') +
+            correctPanel(item.matched_text || name, item.source_line) +
+            '</div>' +
             '<div class="detected-actions">' +
             '<span class="match-badge ' + badgeClass + '">' + matchLabel + '</span>' +
+            '<button class="btn btn-gradient btn-sm" type="button" data-confirm-detected aria-pressed="' + (confirmed ? 'true' : 'false') + '">' + (confirmed ? 'Confirmed ✓' : 'Confirm') + '</button>' +
+            '<button class="btn btn-outline btn-sm" type="button" data-change-detected>Change</button>' +
             (medicineId ? '<a class="btn btn-outline btn-sm" href="/medicine/' + encodeURIComponent(medicineId) + '">View</a>' : '') +
-            '<a class="btn btn-outline btn-sm" href="/search?q=' + encodeURIComponent(item.matched_text || name) + '">Search</a>' +
             '<button class="btn btn-quiet btn-sm" type="button" data-remove-detected>Remove</button>' +
             '</div></div>';
     }
@@ -901,9 +1132,16 @@
     function renderUnmatchedLine(item) {
         const printed = item.text || "Unreadable line";
         const query = item.query || printed;
-        return '<div><span class="feature-icon soft"><span class="icon icon-file"></span></span>' +
-            '<div class="min-grow"><strong>' + escapeHtml(printed) + '</strong><small>Not matched to a catalog medicine</small></div>' +
-            '<div class="detected-actions"><a class="btn btn-outline btn-sm" href="/search?q=' + encodeURIComponent(query) + '">Search</a></div></div>';
+        const chips = suggestionChips(item.suggestions, printed);
+        const read = item.ocr_confidence != null ? " · Read confidence " + Math.round(item.ocr_confidence) + "%" : "";
+        return '<div data-unmatched data-source-line="' + escapeHtml(printed) + '"><span class="feature-icon soft"><span class="icon icon-file"></span></span>' +
+            '<div class="min-grow"><strong>' + escapeHtml(printed) + '</strong>' +
+            '<small>' + (item.note ? escapeHtml(item.note) : chips ? 'Not sure which medicine this is. Tap the one written on the prescription.' : 'Not matched to a catalog medicine') + escapeHtml(read) + '</small>' +
+            (chips ? '<div class="scan-chips">' + chips + '</div>' : '') +
+            correctPanel(query, printed) +
+            '</div>' +
+            '<div class="detected-actions"><button class="btn btn-outline btn-sm" type="button" data-change-detected>Type it</button>' +
+            '<a class="btn btn-outline btn-sm" href="/search?q=' + encodeURIComponent(query) + '">Search</a></div></div>';
     }
 
     function normalizeMedicine(item) {
@@ -922,18 +1160,149 @@
             packSize: item.pack_size || "",
             releaseType: item.release_type || "",
             category: item.medicine_category || item.category || "",
+            imageUrl: item.image_url || "",
             apiSource: item.api_source || "",
             rx: String(item.prescription_required || item.rx || "").toLowerCase() === "true" || String(item.prescription_required || "").includes("Required")
         };
     }
 
+    function priceLabel(medicine) {
+        return medicine.price ? "Rs. " + escapeHtml(formatPrice(medicine.price)) : "Price not available";
+    }
+
     function priceProvenance(medicine) {
-        if (!medicine.price) return "Price unavailable";
+        if (!medicine.price) {
+            return medicine.category === "External"
+                ? "Not listed in the Indian catalog"
+                : "No price recorded";
+        }
+        const source = String(medicine.priceSource || "");
+        const label = /pharmeasy/i.test(source) ? "PharmEasy price"
+            : /aushadhi|pmbjp/i.test(source) ? "Jan Aushadhi price"
+            : "Catalog price";
         const date = medicine.priceCheckedAt ? new Date(medicine.priceCheckedAt) : null;
-        const dateLabel = date && !Number.isNaN(date.getTime())
-            ? "Checked " + dateFormatter.format(date)
-            : "update date unknown";
-        return escapeHtml((medicine.priceSource || "Listed price") + " · " + dateLabel);
+        return date && !Number.isNaN(date.getTime())
+            ? escapeHtml(label + " · checked " + dateFormatter.format(date))
+            : escapeHtml(label + " (date unknown)");
+    }
+
+    // ---- Medicine pictures -------------------------------------------------
+    // A real product photo only when the catalog row carries its own image URL.
+    // Otherwise a drawing of the dosage form. Never a stock photo of another product.
+    const SHARED_PLACEHOLDER_IMAGE = "hx2gxivwmeoxxxsc1hix";
+
+    function formFamily(form) {
+        const f = String(form || "").toLowerCase();
+        if (/inhaler|respule|rotacap|spray|nebul/.test(f)) return "inhaler";
+        if (/injection|infusion|vial|syringe|\bpen\b/.test(f)) return "injection";
+        if (/drop/.test(f)) return "drops";
+        if (/capsule|softgel/.test(f)) return "capsule";
+        if (/tablet|lozenge|pastille/.test(f)) return "tablet";
+        if (/syrup|suspension|solution|liquid|elixir|linctus|mouthwash|emulsion/.test(f)) return "liquid";
+        if (/cream|gel|ointment|lotion|soap|shampoo|paste|balm|serum|wash/.test(f)) return "topical";
+        if (/powder|sachet|granule/.test(f)) return "powder";
+        return "other";
+    }
+
+    const FORM_GRADIENT = {
+        tablet: "gradient-b", capsule: "gradient-e", liquid: "gradient-d", injection: "gradient-c",
+        drops: "gradient-a", topical: "gradient-f", inhaler: "gradient-g", powder: "gradient-d", other: "gradient-a"
+    };
+
+    const SHADE = "rgba(15,23,42,0.18)";
+    const FORM_ART = {
+        tablet: '<circle cx="26" cy="28" r="15" fill="currentColor"/><path d="M15 28h22" stroke="' + SHADE + '" stroke-width="2.5" stroke-linecap="round"/>' +
+            '<circle cx="44" cy="44" r="11" fill="currentColor" opacity=".75"/><path d="M36.5 36.5l15 15" stroke="' + SHADE + '" stroke-width="2.5" stroke-linecap="round"/>',
+        capsule: '<g transform="rotate(-40 32 32)"><rect x="10" y="22" width="44" height="20" rx="10" fill="currentColor" opacity=".55"/>' +
+            '<path d="M20 22h12v20H20a10 10 0 0 1 0-20Z" fill="currentColor"/></g>',
+        liquid: '<rect x="25" y="6" width="14" height="7" rx="2" fill="currentColor"/>' +
+            '<path d="M24 13h16v5l6 7v29a4 4 0 0 1-4 4H22a4 4 0 0 1-4-4V25l6-7Z" fill="currentColor"/>' +
+            '<rect x="22" y="31" width="20" height="15" rx="2" fill="' + SHADE + '"/>',
+        injection: '<g transform="rotate(45 32 32)"><rect x="26" y="14" width="12" height="28" rx="2" fill="currentColor"/>' +
+            '<rect x="21" y="10" width="22" height="4" rx="2" fill="currentColor"/><rect x="30" y="3" width="4" height="7" fill="currentColor"/>' +
+            '<rect x="30.5" y="42" width="3" height="5" fill="currentColor"/><rect x="31.3" y="47" width="1.4" height="12" fill="currentColor"/>' +
+            '<path d="M28 22h4M28 28h4M28 34h4" stroke="' + SHADE + '" stroke-width="2"/></g>',
+        drops: '<path d="M32 6S15 27 15 39a17 17 0 0 0 34 0C49 27 32 6 32 6Z" fill="currentColor"/>' +
+            '<path d="M23 40a9 9 0 0 0 9 9" stroke="' + SHADE + '" stroke-width="3" fill="none" stroke-linecap="round"/>',
+        topical: '<g transform="rotate(-30 32 32)"><path d="M19 14h26l-4 33H23Z" fill="currentColor"/>' +
+            '<rect x="17" y="9" width="30" height="5" rx="1.5" fill="currentColor" opacity=".7"/>' +
+            '<rect x="27" y="47" width="10" height="9" rx="2" fill="currentColor" opacity=".8"/>' +
+            '<rect x="25" y="23" width="14" height="12" rx="2" fill="' + SHADE + '"/></g>',
+        inhaler: '<path d="M26 6h12a3 3 0 0 1 3 3v27H23V9a3 3 0 0 1 3-3Z" fill="currentColor"/>' +
+            '<path d="M16 36h28a3 3 0 0 1 3 3v13a3 3 0 0 1-3 3H19a3 3 0 0 1-3-3Z" fill="currentColor" opacity=".8"/>' +
+            '<rect x="47" y="40" width="10" height="11" rx="2" fill="currentColor" opacity=".6"/>',
+        powder: '<rect x="16" y="8" width="32" height="48" rx="3" fill="currentColor"/>' +
+            '<path d="M16 15h32M16 49h32" stroke="' + SHADE + '" stroke-width="2" stroke-dasharray="3 3"/>' +
+            '<circle cx="32" cy="32" r="7" fill="' + SHADE + '"/>'
+    };
+    FORM_ART.other = FORM_ART.capsule;
+
+    function photoUrl(medicine) {
+        const url = String(medicine.imageUrl || "");
+        return /^https:\/\//.test(url) && url.indexOf(SHARED_PLACEHOLDER_IMAGE) === -1 ? url : "";
+    }
+
+    function photoTag(photo) {
+        return '<img class="med-photo" src="' + escapeHtml(photo) + '" alt="" decoding="async" referrerpolicy="no-referrer"' +
+            ' onload="this.parentNode.classList.add(\'has-photo\')" onerror="this.remove()">';
+    }
+
+    // A row without a photo asks the server once for a verified listing photo of the same product.
+    let photoLookupTimer = null;
+    const photoLookupDone = new Set();
+
+    function schedulePhotoLookup() {
+        if (photoLookupTimer) return;
+        photoLookupTimer = setTimeout(async function () {
+            photoLookupTimer = null;
+            const ids = [];
+            document.querySelectorAll("[data-photo-id]").forEach(function (node) {
+                const id = node.getAttribute("data-photo-id");
+                if (id && !photoLookupDone.has(id) && ids.indexOf(id) === -1 && ids.length < 24) ids.push(id);
+            });
+            if (!ids.length) return;
+            ids.forEach(function (id) { photoLookupDone.add(id); });
+            const data = await fetchJson("/api/medicine-images?ids=" + ids.join(","));
+            const images = (data && data.images) || {};
+            Object.keys(images).forEach(function (id) {
+                const photo = photoUrl({ imageUrl: images[id] });
+                if (!photo) return;
+                document.querySelectorAll('[data-photo-id="' + id + '"]').forEach(function (node) {
+                    node.removeAttribute("data-photo-id");
+                    if (!node.querySelector(".med-photo")) node.insertAdjacentHTML("beforeend", photoTag(photo));
+                });
+            });
+            // More rows than one request covers: ask again for the rest.
+            const pending = Array.prototype.some.call(document.querySelectorAll("[data-photo-id]"), function (node) {
+                return !photoLookupDone.has(node.getAttribute("data-photo-id"));
+            });
+            if (pending) schedulePhotoLookup();
+        }, 400);
+    }
+
+    function medicineVisual(medicine, className, badges) {
+        const family = formFamily(medicine.form);
+        const photo = photoUrl(medicine);
+        const lookup = !photo && /^\d+$/.test(String(medicine.id || ""));
+        if (lookup) schedulePhotoLookup();
+        // The drawing stays until the photo has actually loaded, so a slow or blocked image never leaves a blank box.
+        return '<div class="' + className + ' ' + FORM_GRADIENT[family] + '"' +
+            (lookup ? ' data-photo-id="' + escapeHtml(String(medicine.id)) + '"' : '') + '>' +
+            badges +
+            '<span class="med-art" aria-hidden="true"><svg viewBox="0 0 64 64">' + FORM_ART[family] + '</svg></span>' +
+            (photo ? photoTag(photo) : '') +
+            '</div>';
+    }
+
+    const ROUTE_LABEL = {
+        "oral": "By mouth", "oral liquid": "By mouth", "injectable": "Injection", "topical": "On skin",
+        "respiratory": "Inhaled", "external": "US catalog only"
+    };
+
+    function metaChips(medicine) {
+        const route = ROUTE_LABEL[String(medicine.category || "").toLowerCase()];
+        return [medicine.strength, medicine.packSize, route].filter(Boolean)
+            .map((text) => '<span class="meta-chip">' + escapeHtml(text) + '</span>').join("");
     }
 
     function infoCard(title, icon, items) {
@@ -982,6 +1351,16 @@
     const priceFormatter = new Intl.NumberFormat("en-IN", { maximumFractionDigits: 2 });
     const unitPriceFormatter = new Intl.NumberFormat("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     const dateFormatter = new Intl.DateTimeFormat("en-IN", { day: "numeric", month: "short", year: "numeric" });
+    const istDateTimeFormatter = new Intl.DateTimeFormat("en-IN", {
+        day: "numeric", month: "short", year: "numeric", hour: "numeric", minute: "2-digit", timeZone: "Asia/Kolkata"
+    });
+
+    // "2026-11-27T07:59:54+00:00" -> "27 Nov 2026, 1:29 pm IST"
+    function formatCheckedAt(value) {
+        if (!value) return "just now";
+        const parsed = new Date(value);
+        return Number.isNaN(parsed.getTime()) ? "recently" : istDateTimeFormatter.format(parsed) + " IST";
+    }
 
     function formatPrice(value) {
         const number = Number(value || 0);
@@ -1093,31 +1472,26 @@
         const liveApiData = responses[1];
         const livePriceData = responses[2];
         const renderLiveApiMatches = function () {
-            if (!liveApiData) return '<section class="comparison-section live-api-section"><h3>Live India API lookup</h3><p class="disclaimer">The live medicine information API could not be reached. Try again later.</p></section>';
-            const matches = Array.isArray(liveApiData.matches) ? liveApiData.matches : [];
-            if (!matches.length) return '<section class="comparison-section live-api-section"><h3>Live India API lookup</h3><p>' + escapeHtml(liveApiData.message || 'No structured live catalog matches were returned.') + '</p><small>Source: ' + escapeHtml(liveApiData.source || 'India medicine API') + '</small></section>';
+            // Restricted classes list nothing; failures and empty results stay quiet when other listings exist.
+            if (liveApiData && liveApiData.restricted) return '';
+            const matches = liveApiData && Array.isArray(liveApiData.matches) ? liveApiData.matches : [];
+            if (!matches.length) return '';
             return '<section class="comparison-section live-api-section">' +
-                '<h3>Live India API catalog matches <span class="count-badge">' + matches.length + '</span></h3>' +
-                '<p class="disclaimer">These products share recorded ingredient, strength and form details in the live catalog. The API does not confirm product-level therapeutic equivalence or provide current prices.</p>' +
-                '<div class="substitutes-list">' + matches.map(function (item) {
-                    return '<article class="comparison-item substitute unverified-match">' +
-                        '<div class="comparison-header"><div class="flex-grow"><h4>' + escapeHtml(item.medicine_name || 'Catalog medicine') + '</h4>' +
-                        '<p>' + escapeHtml(item.manufacturer || item.brand_name || '') + '</p></div></div>' +
-                        '<div class="comparison-details">' +
-                        '<span class="badge">' + escapeHtml(item.dosage_form || 'Form unavailable') + '</span>' +
-                        '<span class="comparison-source">Recorded generic: ' + escapeHtml(item.composition || 'Composition unavailable') + '</span>' +
-                        '<span class="badge secondary">' + escapeHtml(item.release_characteristics || 'Release data unavailable') + '</span>' +
-                        '<span class="badge secondary">' + escapeHtml(item.route || 'Route unavailable') + '</span>' +
-                        '<span class="badge">Price unavailable from this API</span>' +
-                        '<span class="comparison-source">License status: ' + escapeHtml(item.license_status || 'Not stated') + '</span>' +
-                        '<span class="comparison-source">Catalog updated: ' + escapeHtml(item.product_updated_at || 'Date unknown') + '</span>' +
-                        '</div><p class="verification-gaps">' + escapeHtml(item.verification_note || item.classification || 'Therapeutic equivalence is not confirmed.') + '</p>' +
-                        '<div class="comparison-actions"><a class="btn btn-outline btn-sm" href="' + escapeHtml(item.source_url) + '" target="_blank" rel="noopener noreferrer">View source record</a></div>' +
-                        '</article>';
-                }).join('') + '</div><small>Source: ' + escapeHtml(liveApiData.source || 'India medicine API') + '</small></section>';
+                '<details class="more-brands">' +
+                '<summary><strong>' + matches.length + ' more brands with the same ingredients</strong> <span class="more-brands-hint">(no price available)</span></summary>' +
+                '<p class="disclaimer">Same ingredients and strength. Ask your doctor or pharmacist before switching.</p>' +
+                '<ul class="more-brands-list">' + matches.map(function (item) {
+                    return '<li><strong>' + escapeHtml(item.medicine_name || 'Catalog medicine') + '</strong>' +
+                        (item.manufacturer ? ' · ' + escapeHtml(item.manufacturer) : '') +
+                        (item.pack_size ? ' · ' + escapeHtml(item.pack_size) : '') + '</li>';
+                }).join('') + '</ul></details></section>';
         };
         const renderLivePriceMatches = function () {
-            if (!livePriceData) return '<section class="comparison-section live-price-section"><h3>Live price comparison</h3><p>Current pharmacy prices could not be loaded.</p></section>';
+            if (livePriceData && livePriceData.restricted) return '';
+            if (!livePriceData || livePriceData.success === false) {
+                if (hasOtherListings()) return '';
+                return '<section class="comparison-section live-price-section"><h3>Live price comparison</h3><p>Current pharmacy prices could not be loaded right now. Try again later.</p></section>';
+            }
             const listings = Array.isArray(livePriceData.matches) ? livePriceData.matches : [];
             if (!listings.length) return '<section class="comparison-section live-price-section"><h3>Live price comparison</h3><p>' + escapeHtml(livePriceData.message || 'No comparable current listings were found.') + '</p></section>';
             const hasSavingsComparison = Boolean(livePriceData.comparison_available && livePriceData.reference);
@@ -1125,7 +1499,9 @@
             return '<section class="comparison-section live-price-section">' +
                 '<h3>' + (hasSavingsComparison ? 'Cheaper same-ingredient listings' : 'Current same-ingredient listings') +
                 ' <span class="count-badge">' + listings.length + '</span></h3>' +
-                '<p>' + escapeHtml(livePriceData.message || '') + '</p>' +
+                '<p class="disclaimer">' + (hasSavingsComparison
+                    ? 'Live PharmEasy prices, same ingredients, strength and pack.'
+                    : 'Live PharmEasy prices. Same ingredients and strength, but savings are not confirmed.') + '</p>' +
                 (hasSavingsComparison ? '<p><strong>Reference listing:</strong> ' + escapeHtml(reference.medicine_name) +
                     ' · Rs. ' + formatPrice(reference.price) + ' · ' + escapeHtml(reference.pack_size || 'Pack unknown') + '</p>' : '') +
                 '<div class="substitutes-list">' + listings.map(function (item) {
@@ -1137,7 +1513,7 @@
                         '</div></div>' +
                         '<div class="comparison-details"><span class="badge">' + escapeHtml(item.pack_size || 'Pack unknown') + '</span>' +
                         (item.price_per_unit ? '<span class="badge secondary">' + escapeHtml(item.price_per_unit) + '</span>' : '') +
-                        '<span class="comparison-source">' + escapeHtml(item.source || 'Pharmacy') + ' · checked ' + escapeHtml(item.checked_at || livePriceData.checked_at || 'just now') + '</span>' +
+                        '<span class="comparison-source">' + escapeHtml(item.source || 'Pharmacy') + ' · checked ' + escapeHtml(formatCheckedAt(item.checked_at || livePriceData.checked_at)) + '</span>' +
                         (item.source_url ? '<a class="comparison-source" href="' + escapeHtml(item.source_url) + '" target="_blank" rel="noopener noreferrer">View listing</a>' : '') +
                         '</div></article>';
                 }).join('') + '</div></section>';
@@ -1151,11 +1527,20 @@
         }) : [];
         const sameIds = new Set(sameComposition.map(function (item) { return String(item.id); }));
         const optionIds = new Set(sameOptions.map(function (item) { return String(item.id); }));
+        const visibleUnverifiedCount = unverifiedMatches.filter(function (item) {
+            return !sameIds.has(String(item.id)) && !optionIds.has(String(item.id));
+        }).length;
+        const liveListingCount = (livePriceData && !livePriceData.restricted && Array.isArray(livePriceData.matches) ? livePriceData.matches.length : 0) +
+            (liveApiData && !liveApiData.restricted && Array.isArray(liveApiData.matches) ? liveApiData.matches.length : 0);
+        function hasOtherListings() {
+            return Boolean(sameComposition.length || sameOptions.length || referenceOptions.length ||
+                visibleUnverifiedCount || liveListingCount);
+        }
         const renderReferencePrices = function () {
             if (!referenceOptions.length) return '';
             return '<section class="comparison-section reference-price-section">' +
                 '<h3>Jan Aushadhi list price for the same composition <span class="count-badge">' + referenceOptions.length + '</span></h3>' +
-                '<p class="disclaimer">A published generic list price for products with the same recorded ingredients, strength and form. It prices a generic product, not this brand, and does not show that the products can be substituted.</p>' +
+                '<p class="disclaimer">Government generic price for the same ingredients and strength. Not this brand, and not proof they can be swapped.</p>' +
                 '<div class="substitutes-list">' + referenceOptions.map(function (item) {
                     const unit = item.unit || 'unit';
                     const unitLabel = item.price_per_unit
@@ -1179,7 +1564,9 @@
                         '<div class="comparison-price"><span class="price-large">Rs. ' + formatPrice(item.price) + '</span>' +
                         (percent > 0 && item.price_is_current
                             ? '<span class="savings-badge ' + savingsClass(percent) + '">Save ' + percent.toFixed(0) + '%</span>'
-                            : '<span class="comparison-source">List price</span>') +
+                            : Number(item.estimated_savings_percent || 0) > 0
+                                ? '<span class="savings-badge estimated">Est. save ' + Number(item.estimated_savings_percent).toFixed(0) + '%</span>'
+                                : '<span class="comparison-source">List price</span>') +
                         '</div></div>' +
                         '<div class="comparison-details">' +
                         '<span class="badge">' + escapeHtml(item.pack || 'Pack unknown') + '</span>' +
@@ -1193,7 +1580,7 @@
             if (!sameComposition.length) return '';
             return '<section class="comparison-section same-composition-section">' +
                 '<h3>Cheaper same-composition options <span class="count-badge">' + sameComposition.length + '</span></h3>' +
-                '<p class="disclaimer">Same recorded active ingredients and strength, with current listing prices on both sides. These are catalog matches, not verified therapeutic equivalents; prices are compared per unit when pack sizes differ.</p>' +
+                '<p class="disclaimer">Same ingredients and strength, recent prices, compared per tablet or unit. Ask your doctor or pharmacist before switching.</p>' +
                 '<div class="substitutes-list">' + sameComposition.map(function (item, idx) {
                     const percent = Number(item.savings_percent || 0);
                     const unit = item.price_per_unit_value
@@ -1227,13 +1614,15 @@
         const renderSameCompositionOptions = function () {
             if (!sameOptions.length) return '';
             const noClaimNote = data && !data.reference_price_available
-                ? 'This product has no recorded price, so no cheaper-than-reference saving can be claimed.'
+                ? 'No price for this product, so no saving is claimed.'
                 : data && data.reference_price_is_current
-                    ? 'This price is a current listing, but no same-composition product with a current listing price is cheaper, so no saving is claimed.'
-                    : 'The recorded price for this product is not a confirmed current listing, so no saving is claimed.';
+                    ? 'No cheaper current price found, so no saving is claimed.'
+                        : sameOptions.some(function (item) { return Number(item.estimated_savings_percent || 0) > 0; })
+                        ? 'Savings are estimates from old catalog prices; check at your pharmacy.'
+                        : 'Prices are old catalog prices, so no saving is claimed.';
             return '<section class="comparison-section same-composition-section">' +
                 '<h3>Same-composition catalog options <span class="count-badge">' + sameOptions.length + '</span></h3>' +
-                '<p class="disclaimer">' + noClaimNote + ' These catalog products share the recorded active ingredients, strength and form; their catalog prices are unverified and they are not verified therapeutic equivalents.</p>' +
+                '<p class="disclaimer">' + noClaimNote + ' Same ingredients, strength and form. Ask your doctor or pharmacist before switching.</p>' +
                 '<div class="substitutes-list">' + sameOptions.map(function (item, idx) {
                     const unit = item.price_per_unit_value
                         ? 'Rs. ' + formatUnitPrice(item.price_per_unit_value) + ' per unit'
@@ -1244,6 +1633,9 @@
                         '<div class="flex-grow"><h4>' + escapeHtml(item.medicine_name) + '</h4>' +
                         '<p>' + escapeHtml(item.brand_name || item.composition || 'Same recorded composition') + '</p></div>' +
                         '<div class="comparison-price"><span class="price-large">Rs. ' + formatPrice(item.price) + '</span>' +
+                        (Number(item.estimated_savings_percent || 0) > 0
+                            ? '<span class="savings-badge estimated">Est. save ' + Number(item.estimated_savings_percent).toFixed(0) + '%</span>'
+                            : '') +
                         '<span class="comparison-source">Catalog price (unverified)</span></div></div>' +
                         '<div class="comparison-details">' +
                         '<span class="badge">' + escapeHtml(item.dosage_form || 'Form') + '</span>' +
@@ -1263,10 +1655,10 @@
             if (!matches.length) return '';
             return '<section class="comparison-section unverified-section">' +
                 '<h3>Same-ingredient catalog matches <span class="count-badge">' + Number(data.potential_match_count || matches.length) + '</span></h3>' +
-                '<p class="disclaimer">These records are shown for review only. A match does not establish that products can be substituted. Prices below may be old dataset listings.</p>' +
+                '<p class="disclaimer">For reference only. Prices may be old. Ask your doctor or pharmacist before switching.</p>' +
                 '<div class="substitutes-list">' + matches.map(function (item) {
                     const priceLabel = Number(item.price || 0) > 0
-                        ? 'Catalog price: Rs. ' + formatPrice(item.price) + ' · ' + priceProvenance(normalizeMedicine(item))
+                        ? 'Rs. ' + formatPrice(item.price) + ' · ' + priceProvenance(normalizeMedicine(item))
                         : 'No catalog price';
                     return '<article class="comparison-item substitute unverified-match">' +
                         '<div class="comparison-header"><div class="flex-grow"><h4>' + escapeHtml(item.medicine_name) + '</h4>' +
@@ -1296,8 +1688,13 @@
                             ? "Same-composition catalog options"
                             : data && data.comparison_status === "reference_pack_unknown"
                                 ? "Same-composition catalog options"
-                                : "No verified alternatives found";
-            const explanation = data && data.message
+                                : hasOtherListings()
+                                    ? "Same-ingredient options (savings not verified)"
+                                    : "No verified alternatives found";
+            const listedWithoutVerifiedSavings = title === "Same-ingredient options (savings not verified)";
+            const explanation = listedWithoutVerifiedSavings
+                ? "Same ingredients and strength. Savings not confirmed. Ask your doctor or pharmacist before switching."
+                : data && data.message
                 ? data.message
                 : "No product-specific verified alternatives with recent comparable prices are available.";
             const sameHtml = renderSameComposition() + renderSameCompositionOptions() + renderReferencePrices();
@@ -1306,7 +1703,7 @@
                 '<h3>' + escapeHtml(title) + '</h3>' +
                 '<p>' + escapeHtml(explanation) + '</p>' +
                 '</div>';
-            body.innerHTML = emptyHtml + sameHtml + renderUnverifiedMatches(unverifiedMatches) + renderLiveApiMatches() + renderLivePriceMatches();
+            body.innerHTML = emptyHtml + sameHtml + renderUnverifiedMatches(unverifiedMatches) + renderLivePriceMatches() + renderLiveApiMatches();
             return;
         }
 
@@ -1383,8 +1780,8 @@
             '</div>' +
             '</div>' +
             '<div class="comparison-footer">' +
-            '<p class="disclaimer"><span class="icon icon-alert-circle"></span> Evidence and recent price checks are shown for each verified result. Ask a pharmacist or prescriber before changing treatment.</p>' +
-            '</div>' + renderSameComposition() + renderSameCompositionOptions() + renderReferencePrices() + renderUnverifiedMatches(unverifiedMatches) + renderLiveApiMatches() + renderLivePriceMatches();
+            '<p class="disclaimer"><span class="icon icon-alert-circle"></span> Ask your doctor or pharmacist before changing medicines.</p>' +
+            '</div>' + renderSameComposition() + renderSameCompositionOptions() + renderReferencePrices() + renderUnverifiedMatches(unverifiedMatches) + renderLivePriceMatches() + renderLiveApiMatches();
     };
 
     window.closeComparison = function() {

@@ -377,16 +377,16 @@ class RxNormFallbackCacheTests(unittest.TestCase):
         self.assertNotIn("savings_percent", undated["reference_price_options"][0])
 
     def _add_medicine(self, name, composition, price=50, form="Capsule", release=None,
-                      checked=None, pack="10 capsules"):
-        key = make_product_key(name, name, "500mg", form, composition, release, pack)
+                      checked=None, pack="10 capsules", strength="500mg"):
+        key = make_product_key(name, name, strength, form, composition, release, pack)
         connection = sqlite3.connect(self.db_path)
         try:
             medicine_id = connection.execute("""INSERT INTO medicines(
                 medicine_name, brand_name, strength, dosage_form, composition, price,
                 release_type, pack_size, composition_complete, price_source,
                 price_checked_at, product_key
-            ) VALUES (?, ?, '500mg', ?, ?, ?, ?, ?, 1, ?, ?, ?)""",
-                (name, name, form, composition, price, release, pack,
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)""",
+                (name, name, strength, form, composition, price, release, pack,
                  "fixture" if checked else None, checked, key)).lastrowid
             for ingredient in parse_composition(composition) or []:
                 connection.execute("""INSERT INTO medicine_ingredients(
@@ -419,6 +419,66 @@ class RxNormFallbackCacheTests(unittest.TestCase):
         self.assertEqual(result["substitutes"], [])
         self.assertEqual(result["unverified_matches"], [])
         self.assertEqual(result["reference_price_options"], [])
+
+    def test_prolonged_release_and_dsr_references_are_not_compared(self):
+        for name in ("Pantoprazole Domperidone Capsule PR", "Pantoprazole Domperidone DSR Capsule"):
+            target = self._add_medicine(name, "Domperidone (30mg) + Pantoprazole (40mg)", strength="30mg")
+            self._add_medicine("Cheap " + name.replace(" PR", "").replace(" DSR", ""),
+                               "Domperidone (30mg) + Pantoprazole (40mg)", price=10, strength="30mg")
+            result = get_substitutes(target)
+            self.assertEqual(result["comparison_status"], "restricted_class", name)
+            self.assertIn("modified-release", result["restricted_class_reason"])
+
+    def test_thyroxine_is_treated_as_narrow_therapeutic_index(self):
+        target = self._add_medicine("Thyro 50mcg Tablet", "Thyroxine (50mcg)", form="Tablet",
+                                    pack="100 tablets", strength="50mcg")
+        self._add_medicine("Other Thyro 50mcg Tablet", "Thyroxine (50mcg)", price=10, form="Tablet",
+                           pack="100 tablets", strength="50mcg")
+        result = get_substitutes(target)
+        self.assertEqual(result["comparison_status"], "restricted_class")
+        self.assertEqual(result["same_composition_options"], [])
+
+    def test_nebuliser_respules_are_not_compared(self):
+        target = self._add_medicine("Budesonide 0.5mg Respules", "Budesonide (0.5mg)", form="Respules",
+                                    pack="5 units", strength="0.5mg")
+        result = get_substitutes(target)
+        self.assertEqual(result["comparison_status"], "restricted_class")
+
+    def test_dispersible_and_vaginal_tablets_do_not_match_plain_tablets(self):
+        kwargs = {"form": "Tablet", "pack": "10 tablets", "strength": "100mg"}
+        plain = self._add_medicine("Clotri 100mg Tablet", "Clotrimazole (100mg)", **kwargs)
+        self._add_medicine("Clotri V 100mg Tablet VT", "Clotrimazole (100mg)", price=10, **kwargs)
+        dispersible = self._add_medicine("Clotri 100mg Tablet DT", "Clotrimazole (100mg)", price=20, **kwargs)
+        self._add_medicine("Other Clotri 100mg Tablet DT", "Clotrimazole (100mg)", price=15, **kwargs)
+        self._add_medicine("Generic Clotri 100mg Tablet", "Clotrimazole (100mg)", price=30, **kwargs)
+
+        plain_names = [item["medicine_name"] for item in get_substitutes(plain)["same_composition_options"]]
+        self.assertEqual(plain_names, ["Generic Clotri 100mg Tablet"])
+        dt_names = [item["medicine_name"] for item in get_substitutes(dispersible)["same_composition_options"]]
+        self.assertEqual(dt_names, ["Other Clotri 100mg Tablet DT"])
+
+    def test_combination_matches_when_strength_column_is_formatted_differently(self):
+        kwargs = {"form": "Tablet", "pack": "10 tablets"}
+        composition = "Ofloxacin (200mg) + Ornidazole (500mg)"
+        target = self._add_medicine("Oflo OZ Tablet", composition, strength="200mg", **kwargs)
+        self._add_medicine("Other OZ 200mg/500mg Tablet", composition, price=20, strength="200mg/500mg", **kwargs)
+        # A strength column that contradicts the product's own composition is not trusted.
+        self._add_medicine("Odd OZ Tablet", composition, price=15, strength="250mg", **kwargs)
+
+        names = [item["medicine_name"] for item in get_substitutes(target)["same_composition_options"]]
+        self.assertEqual(names, ["Other OZ 200mg/500mg Tablet"])
+
+    def test_decimal_strengths_are_not_confused(self):
+        kwargs = {"form": "Tablet", "pack": "10 tablets", "strength": "40mg"}
+        target = self._add_medicine("Telmi H Tablet", "Hydrochlorothiazide (12.5mg) + Telmisartan (40mg)", **kwargs)
+        # The stored strength key reads "125mg" for both 12.5mg and 125mg.
+        self._add_medicine("Wrong Telmi H Tablet", "Hydrochlorothiazide (125mg) + Telmisartan (40mg)",
+                           price=10, **kwargs)
+        self._add_medicine("Right Telmi H Tablet", "Hydrochlorothiazide (12.5mg) + Telmisartan (40mg)",
+                           price=20, **kwargs)
+
+        names = [item["medicine_name"] for item in get_substitutes(target)["same_composition_options"]]
+        self.assertEqual(names, ["Right Telmi H Tablet"])
 
     def test_injectable_reference_is_not_compared(self):
         target = self._add_medicine(
@@ -628,49 +688,43 @@ class RxNormFallbackCacheTests(unittest.TestCase):
         self.assertEqual(result["substitutes"], [])
 
     def test_live_india_api_returns_only_structured_same_strength_form_matches(self):
-        payload = {"total": 2, "results": [
-            {
-                "medicineSctid": "prod-20", "medicineName": "Example Atorvastatin 20 mg tablet",
-                "brand.brandName": "Example", "manufacturer.manufacturerName": "Example Pharma",
-                "generic.sctid": "generic-20", "licenseStatus": "UNKNOWN",
-                "genericDetail": {
-                    "name": "Atorvastatin (as atorvastatin calcium) 20 mg oral tablet",
-                    "doseForm": "Oral tablet", "routeOfAdministration": "Oral route",
-                    "lastUpdatedOn": "2026-03-10", "synonyms": ["conventional release oral tablet"],
-                    "composition": [{"substanceName": "Atorvastatin calcium", "strength": "20/1", "unit": "milligram/Tablet"}],
-                },
-            },
-            {
-                "medicineSctid": "prod-40", "medicineName": "Example Atorvastatin 40 mg tablet",
-                "generic.sctid": "generic-40", "genericDetail": {
-                    "name": "Atorvastatin 40 mg oral tablet", "doseForm": "Oral tablet",
-                    "composition": [{"substanceName": "Atorvastatin", "strength": "40/1", "unit": "milligram/Tablet"}],
-                },
-            },
-            {
-                "medicineSctid": "prod-combo", "medicineName": "Combination tablet",
-                "genericDetail": {
-                    "name": "Atorvastatin 20 mg and Amlodipine 5 mg oral tablet",
-                    "doseForm": "Oral tablet", "composition": [
-                        {"substanceName": "Atorvastatin calcium", "strength": "20/1", "unit": "milligram/Tablet"},
-                        {"substanceName": "Amlodipine besylate", "strength": "5/1", "unit": "milligram/Tablet"},
-                    ],
-                },
-            },
+        def record(pid, name, composition, form="Tablet"):
+            return {"product_id": pid, "name": name, "composition": composition, "dosage_form": form,
+                    "manufacturer": "Example Pharma", "packaging": "strip of 10 tablets", "mrp": 50.0}
+        payload = {"products": 5, "results": [
+            record("p20", "Example 20 Tablet", "Atorvastatin (20mg)"),
+            record("p40", "Example 40 Tablet", "Atorvastatin (40mg)"),
+            record("combo", "Combo Tablet", "Atorvastatin (20mg) + Amlodipine (5mg)"),
+            record("cap", "Example 20 Capsule", "Atorvastatin (20mg)", form="Capsule"),
+            record("sr", "Example 20 SR Tablet", "Atorvastatin (20mg)"),
+            record("self", "Reference 20 Tablet", "Atorvastatin (20mg)"),
         ]}
         response = Mock()
         response.json.return_value = payload
         with patch.object(india_medicine_api.requests, "get", return_value=response) as api_call:
             result = india_medicine_api.search_live_alternatives({
+                "medicine_name": "Reference 20 Tablet",
                 "composition": "Atorvastatin (20mg)", "dosage_form": "Tablet", "release_type": None,
             }, limit=5)
 
         api_call.assert_called_once()
-        self.assertEqual(api_call.call_args.kwargs["params"]["q"], "Atorvastatin 20 mg oral tablet")
-        self.assertEqual([m["medicine_name"] for m in result["matches"]], ["Example Atorvastatin 20 mg tablet"])
-        self.assertEqual(result["matches"][0]["release_characteristics"], "Conventional release")
+        self.assertTrue(api_call.call_args.args[0].endswith("/v1/search"))
+        self.assertEqual(api_call.call_args.kwargs["params"]["q"], "Atorvastatin 20mg")
+        self.assertEqual([m["medicine_name"] for m in result["matches"]], ["Example 20 Tablet"])
+        self.assertEqual(result["matches"][0]["pack_size"], "10 tablets")
         self.assertIsNone(result["matches"][0]["price"])
         self.assertIn("equivalence not confirmed", result["matches"][0]["classification"])
+
+    def test_live_india_api_failure_message_hides_exception_names(self):
+        response = Mock()
+        response.json.side_effect = ValueError("Expecting value: line 1 column 1 (char 0)")
+        with patch.object(india_medicine_api.requests, "get", return_value=response):
+            result = india_medicine_api.search_live_alternatives({
+                "composition": "Atorvastatin (20mg)", "dosage_form": "Tablet",
+            })
+        self.assertFalse(result["success"])
+        self.assertNotIn("Error", result["message"])
+        self.assertNotIn("(", result["message"])
 
     def test_price_comparison_requires_exact_ingredients_form_and_pack(self):
         def product(product_id, name, strength, pack, price, brand, ingredients=None):

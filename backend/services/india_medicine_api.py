@@ -1,14 +1,20 @@
 """Live lookups against the India Drug Information Service (DrugDB/NRCeS)."""
 
+import logging
+import os
 import re
 
 import requests
 
-from backend.medicine_data import parse_composition
+from backend.medicine_data import (
+    extract_pack_size, extract_release_type, normalize_medication_text, parse_composition,
+)
+
+logger = logging.getLogger(__name__)
 
 DRUGDB_BASE_URL = "https://drugdb.in"
 DRUGDB_TIMEOUT_SECONDS = 8
-DRUGDB_SOURCE = "Drug Information Service · NRCeS Common Drug Codes for India"
+DRUGDB_SOURCE = "DrugDB · HealthPilot India drug catalog"
 
 _FORM_WORDS = {
     "tablet": "tablet", "tablets": "tablet", "tab": "tablet",
@@ -38,131 +44,90 @@ def _amount_and_unit(value):
     return float(match.group(1)), unit
 
 
-def _target_query(medicine):
-    ingredients = parse_composition(medicine.get("composition"))
-    if not ingredients:
-        return None, []
-    chunks = []
-    for ingredient in ingredients:
-        strength = re.sub(r"(?i)(mcg|μg|µg|mg|g|ml|iu|units?|%)", r" \1", ingredient["ingredient_strength"])
-        chunks.append(f"{ingredient['ingredient_name']} {strength}")
-    form = _clean(medicine.get("dosage_form")).casefold()
-    form_token = next((token for token in _FORM_WORDS if token in form), "")
-    form_token = _FORM_WORDS.get(form_token, form_token)
-    route = "oral" if form_token in {"tablet", "capsule", "syrup", "solution"} else ""
-    release = _clean(medicine.get("release_type"))
-    query = " ".join(part for part in [" ".join(chunks), route, release, form_token] if part)
-    return query, ingredients
-
-
-def _matches_candidate(candidate, ingredients, medicine):
-    detail = candidate.get("genericDetail") or {}
-    generic_name = _clean(detail.get("name") or candidate.get("generic.genericName")).casefold()
-    form = _clean(detail.get("doseForm")).casefold()
-    components = detail.get("composition") or []
-    if not generic_name or not components:
-        return False
-
-    # Verify the ingredient identity and strength against the live structured
-    # composition rather than relying on a brand-name or search-text match.
-    if len(components) != len(ingredients):
+def _record_matches(record, ingredients, medicine):
+    """Exact ingredient/strength/form/release check against a DrugDB v1 record."""
+    components = parse_composition(record.get("composition"))
+    if not components or len(components) != len(ingredients):
         return False
     unmatched = list(components)
     for target in ingredients:
         target_name = _ingredient_core(target["ingredient_name"])
-        matched_index = next((
-            index for index, row in enumerate(unmatched)
-            if target_name and _ingredient_core(row.get("substanceName")) == target_name
-        ), None)
-        if matched_index is None:
-            return False
-        component = unmatched.pop(matched_index)
         target_amount, target_unit = _amount_and_unit(target["ingredient_strength"])
-        candidate_amount, candidate_unit = _amount_and_unit(component.get("strength"))
-        candidate_unit = candidate_unit or _clean(component.get("unit")).casefold().split("/")[0]
-        candidate_unit = {"milligram": "mg", "microgram": "mcg", "gram": "g"}.get(candidate_unit, candidate_unit)
-        if target_amount is None or candidate_amount is None or target_amount != candidate_amount:
+        index = next((
+            i for i, row in enumerate(unmatched)
+            if target_name and _ingredient_core(row["ingredient_name"]) == target_name
+            and _amount_and_unit(row["ingredient_strength"]) == (target_amount, target_unit)
+        ), None)
+        if index is None or target_amount is None:
             return False
-        if target_unit and candidate_unit and target_unit != candidate_unit:
-            return False
-
+        unmatched.pop(index)
     requested_form = _clean(medicine.get("dosage_form")).casefold()
-    if requested_form and not any(word in form for word in ("tablet", "capsule", "syrup", "injection", "solution", "cream", "ointment", "suspension") if word in requested_form):
+    form = _clean(record.get("dosage_form") or record.get("name")).casefold()
+    form_word = next((token for token in _FORM_WORDS if token in requested_form), "")
+    if form_word and _FORM_WORDS[form_word] not in form:
         return False
-
-    requested_release = _clean(medicine.get("release_type")).casefold()
-    if requested_release:
-        release_markers = {"ir": "conventional release", "xr": "extended release", "er": "extended release", "sr": "sustained release", "cr": "controlled release", "mr": "modified release"}
-        expected = release_markers.get(requested_release, requested_release)
-        release_text = (generic_name + " " + " ".join(detail.get("synonyms") or [])).casefold()
-        if expected not in release_text and requested_release not in release_text:
-            return False
+    requested_release = _clean(medicine.get("release_type")).upper()
+    if requested_release == "IR":
+        requested_release = ""
+    if (extract_release_type(record.get("name")) or "") != requested_release:
+        return False
     return True
 
 
 def search_live_alternatives(medicine, limit=10):
-    """Find same generic-product concepts from DrugDB at request time.
+    """Find same-composition products in the live DrugDB catalog at request time.
 
-    Results establish only that DrugDB records share a structured generic
-    concept. DrugDB does not return product-pair BE/equivalence decisions or
-    live price quotations, so these are never called verified substitutes.
+    A match only shows that a catalog record lists the same ingredients,
+    strengths, form and release markers. DrugDB gives no equivalence decision
+    and no current selling price, so these are never called substitutes.
     """
-    query, ingredients = _target_query(dict(medicine))
-    if not query or not ingredients:
+    medicine = dict(medicine)
+    ingredients = parse_composition(medicine.get("composition"))
+    if not ingredients or not medicine.get("dosage_form"):
         return {"success": True, "source": DRUGDB_SOURCE, "count": 0, "matches": [],
-                "message": "Complete ingredient, strength, and dosage-form data are required for a live API lookup."}
+                "message": "Complete ingredient, strength, and dosage-form data are required for a live catalog lookup."}
+    query = " ".join(f"{row['ingredient_name']} {row['ingredient_strength']}" for row in ingredients)
+    headers = {"User-Agent": "MED-FINDER/1.0", "Accept": "application/json"}
+    if os.environ.get("DRUGDB_API_KEY"):
+        headers["X-Api-Key"] = os.environ["DRUGDB_API_KEY"]
     try:
         response = requests.get(
-            f"{DRUGDB_BASE_URL}/search",
-            params={"q": query, "type": "medicine", "detail": "full", "limit": min(max(limit * 5, 20), 100)},
+            f"{DRUGDB_BASE_URL}/v1/search",
+            params={"q": query, "type": "drug", "limit": 50},
+            headers=headers,
             timeout=DRUGDB_TIMEOUT_SECONDS,
         )
         response.raise_for_status()
         payload = response.json()
     except (requests.RequestException, ValueError) as exc:
+        logger.warning("Live DrugDB lookup failed for %r: %s", query, exc)
         return {"success": False, "source": DRUGDB_SOURCE, "count": 0, "matches": [],
-                "message": f"The live India medicine lookup is temporarily unavailable ({type(exc).__name__})."}
+                "message": "The live catalog lookup is unavailable right now."}
 
-    products = payload.get("results", []) if isinstance(payload, dict) else []
+    records = payload.get("results", []) if isinstance(payload, dict) else []
+    own_name = normalize_medication_text(medicine.get("medicine_name"))
     matches = []
     seen = set()
-    for product in products:
-        if not isinstance(product, dict) or not _matches_candidate(product, ingredients, dict(medicine)):
+    for record in records:
+        if not isinstance(record, dict) or not _record_matches(record, ingredients, medicine):
             continue
-        product_id = _clean(product.get("medicineSctid"))
-        if not product_id or product_id in seen:
+        product_id = _clean(record.get("product_id"))
+        if not product_id or product_id in seen or normalize_medication_text(record.get("name")) == own_name:
             continue
         seen.add(product_id)
-        detail = product.get("genericDetail") or {}
-        generic_text = " ".join([_clean(detail.get("name"))] + list(detail.get("synonyms") or [])).casefold()
-        release_characteristics = next((
-            label for phrase, label in (
-                ("conventional release", "Conventional release"),
-                ("immediate release", "Immediate release"),
-                ("extended release", "Extended release"),
-                ("sustained release", "Sustained release"),
-                ("controlled release", "Controlled release"),
-                ("modified release", "Modified release"),
-                ("delayed release", "Delayed release"),
-            ) if phrase in generic_text
-        ), "Not specified by source")
         matches.append({
-            "medicine_name": product.get("medicineName") or product.get("brand.brandName"),
-            "brand_name": product.get("brand.brandName"),
-            "manufacturer": product.get("manufacturer.manufacturerName"),
-            "license_status": product.get("licenseStatus") or "Not stated",
-            "composition": detail.get("name") or product.get("generic.genericName"),
-            "dosage_form": detail.get("doseForm"),
-            "release_characteristics": release_characteristics,
-            "route": detail.get("routeOfAdministration"),
-            "generic_concept_id": product.get("generic.sctid") or detail.get("genericSctid"),
+            "medicine_name": _clean(record.get("name")) or "Catalog medicine",
+            "manufacturer": _clean(record.get("manufacturer")),
+            "composition": _clean(record.get("composition")),
+            "dosage_form": _clean(record.get("dosage_form")),
+            "pack_size": extract_pack_size(record.get("packaging")),
+            "release_characteristics": extract_release_type(record.get("name")) or "No release marker in name",
+            "license_status": "Not stated",
             "product_concept_id": product_id,
-            "product_updated_at": product.get("lastUpdatedon"),
-            "generic_concept_updated_at": detail.get("lastUpdatedOn"),
-            "source_url": f"{DRUGDB_BASE_URL}/search?id={product_id}&type=medicine",
+            "source_url": None,
             "price": None,
-            "classification": "Same recorded generic concept · equivalence not confirmed",
-            "verification_note": "Live catalog data supports an ingredient/strength/form match only. Product-level therapeutic equivalence and current price are not provided by this API.",
+            "classification": "Same recorded composition · equivalence not confirmed",
+            "verification_note": "The live catalog lists the same ingredients, strength and form. It does not confirm therapeutic equivalence or give a current price.",
         })
         if len(matches) >= max(0, min(limit, 20)):
             break
@@ -172,7 +137,7 @@ def search_live_alternatives(medicine, limit=10):
         "source": DRUGDB_SOURCE,
         "query": query,
         "count": len(matches),
-        "api_total": payload.get("total", len(products)) if isinstance(payload, dict) else len(products),
+        "api_total": payload.get("products", len(records)) if isinstance(payload, dict) else len(records),
         "matches": matches,
-        "message": "Live catalog matches are shown for ingredient/form review; the API does not certify these products as interchangeable.",
+        "message": "Live catalog matches are shown for ingredient/form review; the catalog does not certify these products as interchangeable.",
     }

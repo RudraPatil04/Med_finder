@@ -4,6 +4,7 @@ import re
 
 from backend.database import execute_query
 from backend.medicine_data import (
+    form_variant,
     is_modified_release,
     normalize_dosage_form,
     normalize_medication_text,
@@ -28,6 +29,66 @@ def _ingredient_signature(medicine_id):
         (medicine_id,),
     )
     return tuple(sorted((row["ingredient_name_norm"], row["ingredient_strength_norm"]) for row in rows))
+
+
+_AMOUNT_PART = re.compile(r"^([\d.]+)\s*([a-z%µμ]*)$")
+
+
+def _precise_amount(text):
+    """'12.50 mg' -> '12.5mg', '1.0mg/5ml' -> '1mg/5ml'; keeps decimals, unlike the stored key."""
+    pieces = []
+    for piece in str(text or "").casefold().replace("µ", "u").replace("μ", "u").split("/"):
+        piece = piece.strip()
+        match = _AMOUNT_PART.match(piece)
+        if match:
+            try:
+                piece = "%g%s" % (float(match.group(1)), match.group(2))
+            except ValueError:
+                pass
+        pieces.append(piece.replace(" ", ""))
+    return "/".join(pieces)
+
+
+def _parse_precise(key):
+    parts = []
+    for part in str(key or "").split("|"):
+        if "\x1f" in part:
+            name, strength = part.split("\x1f", 1)
+            parts.append((name, _precise_amount(strength)))
+    return tuple(sorted(parts))
+
+
+def _precise_signature(medicine_id):
+    rows = execute_query(
+        "SELECT ingredient_name_norm, ingredient_strength FROM medicine_ingredients WHERE medicine_id = ?",
+        (medicine_id,),
+    )
+    return tuple(sorted((row["ingredient_name_norm"], _precise_amount(row["ingredient_strength"]))
+                        for row in rows))
+
+
+def _strength_consistent(strength, precise):
+    """True when a strength column only restates amounts from the product's own composition."""
+    whole = _precise_amount(strength)
+    amounts = [amount for _, amount in precise]
+    if not whole:
+        return False
+    if whole in amounts:
+        return True
+    remaining = list(amounts)
+    for part in whole.split("/"):
+        if part not in remaining:
+            return False
+        remaining.remove(part)
+    return True
+
+
+def _strength_agrees(reference_strength, candidate_strength, precise):
+    """Same strength column, or both columns consistent with the (identical) composition."""
+    if str(reference_strength or "").strip().casefold() == str(candidate_strength or "").strip().casefold():
+        return bool(str(reference_strength or "").strip())
+    return (_strength_consistent(reference_strength, precise)
+            and _strength_consistent(candidate_strength, precise))
 
 
 def _fresh_price(value):
@@ -85,15 +146,25 @@ def _candidate_rows(medicine, signature, target_id, require_release_match=False,
                     require_pack_match=True):
     if not signature:
         return []
+    precise = _precise_signature(target_id)
+    # Candidates are found through the reference's rarest ingredient rather than the
+    # strength column, which combination products fill inconsistently ("200mg" on one
+    # row, "200mg/500mg" on another). Strength agreement is checked per row below.
+    pivot_name, pivot_strength = min(signature, key=lambda part: execute_query(
+        "SELECT COUNT(*) AS n FROM medicine_ingredients WHERE ingredient_name_norm = ?",
+        (part[0],),
+    )[0]["n"])
     sql = """SELECT m.*,
-                    GROUP_CONCAT(i.ingredient_name_norm || ':' || i.ingredient_strength_norm, '|') AS ingredient_key
+                    GROUP_CONCAT(i.ingredient_name_norm || ':' || i.ingredient_strength_norm, '|') AS ingredient_key,
+                    GROUP_CONCAT(i.ingredient_name_norm || char(31) || COALESCE(i.ingredient_strength, ''), '|') AS precise_key
              FROM medicines m
              JOIN medicine_ingredients i ON i.medicine_id = m.id
-             WHERE m.id != ?
+             WHERE m.id IN (SELECT medicine_id FROM medicine_ingredients
+                            WHERE ingredient_name_norm = ? AND ingredient_strength_norm = ?)
+               AND m.id != ?
                AND m.composition_complete = 1
-               AND lower(m.strength) = lower(?)
                AND lower(m.dosage_form) = lower(?)"""
-    params = [target_id, medicine["strength"], medicine["dosage_form"]]
+    params = [pivot_name, pivot_strength, target_id, medicine["dosage_form"]]
     if require_pack_match:
         sql += " AND lower(m.pack_size) = lower(?)"
         params.append(medicine["pack_size"])
@@ -110,6 +181,15 @@ def _candidate_rows(medicine, signature, target_id, require_release_match=False,
             tuple(part.split(":", 1)) for part in parts if ":" in part
         ))
         if candidate_signature != signature:
+            continue
+        # The stored strength key drops decimal points (12.5mg and 125mg both read
+        # "125mg"), so the recorded strengths are compared again with their decimals.
+        if _parse_precise(item.pop("precise_key", "")) != precise:
+            continue
+        if not _strength_agrees(medicine.get("strength"), item.get("strength"), precise):
+            continue
+        # A dispersible, mouth-dissolving or vaginal tablet is not a plain tablet.
+        if form_variant(item.get("medicine_name")) != form_variant(medicine.get("medicine_name")):
             continue
         # A modified-release product whose release column is empty would otherwise
         # pass as a plain immediate-release equivalent, so the name is checked too.
@@ -161,8 +241,17 @@ def _reference_price_options(medicine, signature, limit=5):
         "ORDER BY COALESCE(price_per_unit, price_value) LIMIT 20",
         (key,),
     )]
+    # The key carries only the form family, so "Ondansetron Orally Disintegrating
+    # Tablets" and plain tablets share it; keep the list row of the same variant.
+    variant = form_variant(medicine.get("medicine_name"))
+    rows = [row for row in rows if form_variant(row.get("generic_name")) == variant]
     if not rows:
         return [], 0
+    # When a current edition lists this composition, older editions are superseded.
+    current_rows = [row for row in rows
+                    if _fresh_within(row.get("observed_at"), REFERENCE_PRICE_MAX_AGE_DAYS)]
+    if current_rows:
+        rows = current_rows
 
     reference_unit = _price_per_unit(medicine.get("price"), medicine.get("pack_size"))
     reference_current = _fresh_price(medicine.get("price_checked_at"))
@@ -198,6 +287,11 @@ def _reference_price_options(medicine, signature, limit=5):
                 option["savings_amount"] = round(difference, 4)
                 option["savings_percent"] = round(difference / reference_unit[0] * 100, 1)
                 option["savings_basis"] = "per unit"
+            elif 0 < unit_price < reference_unit[0]:
+                difference = reference_unit[0] - unit_price
+                option["estimated_savings_amount"] = round(difference, 4)
+                option["estimated_savings_percent"] = round(difference / reference_unit[0] * 100, 1)
+                option["estimated_savings_basis"] = "per unit, prices not both confirmed as current"
         options.append(option)
     return options, len(rows)
 
@@ -308,6 +402,18 @@ def get_substitutes(medicine_id, limit=5):
                     basis = "per pack"
 
             if savings is None:
+                # Old or undated prices cannot support a saving claim, but a per-unit
+                # difference between recorded catalog prices is shown as an estimate,
+                # under separate keys so it is never mistaken for a verified saving.
+                if (
+                    reference_has_price and reference_unit
+                    and candidate_unit[1] == reference_unit[1]
+                    and candidate_unit[0] < reference_unit[0]
+                ):
+                    estimate = reference_unit[0] - candidate_unit[0]
+                    item["estimated_savings_amount"] = round(estimate, 4)
+                    item["estimated_savings_percent"] = round(estimate / reference_unit[0] * 100, 1)
+                    item["estimated_savings_basis"] = "per unit, catalog prices not confirmed as current"
                 catalog_options.append(item)
                 continue
             item["savings_amount"] = amount
@@ -461,6 +567,10 @@ def get_substitutes(medicine_id, limit=5):
             or [0]
         ),
         "max_savings_amount": best["savings_amount"] if best else 0.0,
+        "max_estimated_savings_percent": max(
+            [item.get("estimated_savings_percent") or 0
+             for item in catalog_options[:max(0, min(limit, 20))]] or [0]
+        ),
         "substitutes": confirmed,
         "comparison_status": status,
         "restricted_class_reason": blocked_reason,

@@ -8,6 +8,54 @@ advice tool, does not decide therapeutic equivalence, and does not sell medicine
 `AGENTS.md` (1,100 lines) is the dated changelog of every change, its measured numbers and its
 caveats. This file is the current state; read AGENTS.md when you need the *why* behind a rule.
 
+## Project handoff (written 2026-11-28; read this before anything else)
+
+The owner (Vineet, GitHub `RudraPatil04`) has moved to a different Claude account. This section
+carries over what earlier Claude sessions learned, so a new session does not have to ask again.
+Where it differs from older sections below, this section is newer.
+
+**What it is.** Med Finder: search a medicine, see cheaper generic alternatives with the same
+composition, their prices, and a prescription scanner. Repo `RudraPatil04/Med_finder`; Vineet's
+local checkout is `D:\MED_FINDER` (Windows). Run with `venv\Scripts\python.exe -m backend.app`.
+168 tests pass on `claude/project-thread-ygw48f`.
+
+**Urgency.** A professor demo is coming and Vineet calls it do-or-die. Prefer small, safe, tested
+changes over new features or refactors.
+
+**Branches (no PRs opened yet).**
+- Chain, each built on the previous: `claude/project-thread-cbb6yv` → `claude/project-thread-f86dlf`
+  (prescription OCR: preprocessing, fuzzy suggestions, confirm step) → `claude/project-thread-1aw1u1`
+  (search accuracy) → `claude/project-thread-4by47q` → `claude/project-thread-nsu8vn` →
+  `claude/project-thread-ygw48f` (latest; contains the whole chain).
+- Separate: `claude/project-thread-xx4toi` (Gemini model fallback chain; `gemini-2.5-flash` retired).
+- Vineet's local `feat/search-no-price-notice` has an uncommitted `backend/ocr_service.py` edit and an
+  unpushed commit `f9c1f8d` (requirements pins relaxed for Python 3.12). It exists only on his laptop.
+
+**Decisions already made.**
+- Prefix repair (`etl/repair_ingredient_prefixes.py --apply`) has been applied to the real database:
+  6,118 medicines fixed. (Supersedes "Prefix repair not applied" further down.)
+- Jan Aushadhi prices imported, dated 2026-11-16.
+- Live PharmEasy price-on-search is built, but PharmEasy rate-limits (HTTP 405) after about 800 lookups.
+- 19 to 21 demo medicines have verified savings that stay current until about 16 Dec 2026.
+- Vineet approved (2026-11-15) a clearly labelled "estimated saving vs catalog price" where no verified
+  saving exists. This relaxes rule 2 for that labelled case only; verified savings still need two
+  current prices.
+- Google Vision is out (Google Cloud wants a Rs 1,000 prepayment). The scanner uses Gemini via a free
+  AI Studio key in `GEMINI_API_KEY`, falling back Gemini → Vision → Tesseract. On Vineet's laptop
+  `GEMINI_API_KEY` is a Windows user variable, so only terminals opened after it was set can see it.
+
+**Measured results.**
+- Search: 97.2% top-1 on a 72-query set, 96.1% on 51 held-out queries.
+- Alternatives: 100% precision / 99.6% recall on a 59-medicine set.
+- Added 37 listings for 5 missing brands. Backup taken first:
+  `database/medfinder.before-listed-brands-20261127.db`. If a brand is missing in the demo, run
+  `etl/add_listed_brands.py`.
+
+**Known issues before the demo.**
+- Ciplox / Cifran rows are mislabelled as ofloxacin. Avoid them in the demo.
+- PharmEasy was blocking the laptop on 2026-11-27. Test one search about 30 minutes before the demo.
+- Product photos load from 1mg servers, so they are fine for a local demo only.
+
 ## Non-negotiable rules
 
 1. **Composition decides matching.** Products are only compared when
@@ -16,7 +64,12 @@ caveats. This file is the current state; read AGENTS.md when you need the *why* 
 2. **No savings claim without two current prices.** `PRICE_MAX_AGE_DAYS = 30` in
    `backend/services/medicine_service.py`. If either side's `price_checked_at` is older (or
    missing), the UI says "Catalog price (unverified)" and the response carries no
-   `savings_amount` / `savings_percent` / `savings_basis`.
+   `savings_amount` / `savings_percent` / `savings_basis`. Since 2026-11-16 (owner's decision)
+   such options may carry `estimated_savings_percent` / `estimated_savings_amount` /
+   `estimated_savings_basis` (per-unit difference of recorded catalog prices); the UI labels
+   them "Est. save X%" with a dashed badge and never merges them with verified savings.
+   `/api/substitutes` also fetches live PharmEasy prices first (`live_price_refresh.py`;
+   `?live=0` or `MEDFINDER_LIVE_PRICES=0` turns that off).
 3. **Never call products interchangeable.** Same composition is not substitution. UI copy and
    API text must keep saying the user should confirm with a doctor or pharmacist.
 4. **Restricted classes get nothing.** `restricted_reason()` in `backend/medicine_data.py`
@@ -29,7 +82,8 @@ caveats. This file is the current state; read AGENTS.md when you need the *why* 
    same ingredient set/strength/form/release carrying `price > 0` and a pack size.
 6. **No invented content.** No ratings, testimonials, confidence scores or "savings" that are
    not computed from stored prices. (A previous pass removed all of those — do not reintroduce.)
-7. **Secrets come from the environment**: `DRUGSETU_API_KEY`, `GOOGLE_VISION_API_KEY`,
+7. **Secrets come from the environment**: `DRUGSETU_API_KEY`, `GEMINI_API_KEY` (plus optional
+   `GEMINI_API_KEY_2` … `_9`, used in turn when one free quota runs out), `GOOGLE_VISION_API_KEY`,
    `DRUGDB_API_KEY`. Never commit a key.
 8. **Do not rebuild the database casually.** `etl/build_database.py` drops `medicines`,
    `medicine_ingredients` and `api_search_cache`. `etl/repair_ingredient_prefixes.py` must be
@@ -59,7 +113,7 @@ Supporting services: `price_comparison_service.py` (per-unit normalization, pack
 `price_enrichment_service.py` (persist a PharmEasy listing price for a price-less row),
 `drug_catalog_service.py` (DrugDB v1 + PharmEasy mapping, dedupe, `ensure_catalog_schema`),
 `drugsetu_service.py` + `enrichment_worker.py` (background fill of composition/pack/MRP),
-`api_cache.py` (`api_search_cache` keys + TTLs), `backend/ocr_service.py` (Tesseract + optional
+`api_cache.py` (`api_search_cache` keys + TTLs), `backend/ocr_service.py` (Gemini, then Google Vision, then Tesseract;
 Google Vision, conservative local matching).
 
 ## Data model
@@ -105,10 +159,10 @@ Optional tools (all safe to skip): `etl/backfill_compositions.py` (resumable, ne
 source CSV), `etl/import_jan_aushadhi.py --pdf … --edition 2025 --edition-date …`,
 `etl/repair_ingredient_prefixes.py [--apply]` (dry run by default).
 
-Tests (unittest, offline, 71 focused tests):
+Tests (unittest, offline, 83 focused tests):
 `test_search_suggestions`, `test_api_fallback_cache`, `test_prescription_ocr`,
 `test_drug_catalog_client`, `test_backfill_compositions`, `test_repair_ingredient_prefixes`,
-`test_drugsetu_enrichment`. `test_api_fallback.py` and `test_clean.py` contain 0 test cases.
+`test_drugsetu_enrichment`, `test_search_ranking`. `test_api_fallback.py` and `test_clean.py` contain 0 test cases.
 
 ## Problems to fix, in priority order
 
@@ -135,7 +189,12 @@ Tests (unittest, offline, 71 focused tests):
 6. **Composition gap.** 77,435 rows are incomplete; the backfill fills ~78% of sampled rows at
    ~2.3 s/row (about 49 hours for the whole pool) and needs the source CSV. Enrichment is
    currently on-demand only (DrugSetu key was a 100-request trial and is exhausted).
-7. **Suggestions are prefix-only.** `metformin` suggests nothing because seeds/queries match
+6b. **Ciprofloxacin is recorded as ofloxacin.** Every Ciplox/Cifran row reads "Ofloxacin"; only
+   26 rows say ciprofloxacin; ~600 "Ofloxacin" tablets at 250/500/750/1000 mg are probably cipro.
+   From the source data. Alternatives *matching* measured 100% precision / 99.6% recall on 2026-11-27
+   (`python -m eval.alternatives_eval`, plus `sample 40`), but that cannot see catalog errors like this.
+7. **Suggestions are prefix-only.** (Search itself measured 97.2% / 96.1% top-1 on the
+   72-query and 51-query held-out sets on 2026-11-27: `python -m eval.search_eval all`.) `metformin` suggests nothing because seeds/queries match
    name and brand, never ingredients; the starter list is fixed at 8 brands.
 8. **Loose ends in the UI.** Footer "Resources"/"Legal" links point at `/`, the hero voice
    button has no handler, the disease page updates without a live region.
@@ -164,5 +223,5 @@ Tests (unittest, offline, 71 focused tests):
   `backend/services/medicine_service.py`.
 - Windows: console encoding needs UTF-8 (`etl` scripts force it); SQLite handles are closed in
   `finally` in `backend/database.py` so temp-DB tests can clean up.
-- Static asset versions live in `templates/base.html` (`v=20261115-8`); bump them when editing
+- Static asset versions live in `templates/base.html` (`v=20261127-1`); bump them when editing
   `static/js/app.js` or `static/css/style.css`.

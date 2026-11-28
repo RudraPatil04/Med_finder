@@ -13,6 +13,7 @@ Author : Naman (with AI assistance)
 
 import requests
 import sys
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -35,6 +36,43 @@ from backend.medicine_data import extract_release_type, make_product_key
 # ============================================================
 # Search RxNorm API
 # ============================================================
+
+_issues = threading.local()
+
+
+def note_issue(source):
+    """Record that a lookup source failed during the current request."""
+    if not hasattr(_issues, "items"):
+        _issues.items = []
+    if source not in _issues.items:
+        _issues.items.append(source)
+
+
+def pop_issues():
+    """Return and clear the failures noted during the current request."""
+    items = getattr(_issues, "items", [])
+    _issues.items = []
+    return items
+
+
+def lookup_rxnorm_ingredient(rxcui):
+    """Return the single active-ingredient name for an RxNorm concept, or None."""
+    try:
+        response = requests.get(
+            f"{RXNORM_API_BASE_URL}/rxcui/{rxcui}/related.json",
+            params={"tty": "IN"}, timeout=RXNORM_API_TIMEOUT,
+        )
+        if response.status_code != 200:
+            return None
+        names = []
+        for group in response.json().get("relatedGroup", {}).get("conceptGroup", []):
+            names += [c.get("name") for c in group.get("conceptProperties", []) if c.get("name")]
+        return names[0].strip() if len(names) == 1 else None
+    except Exception as error:
+        print(f"RxNorm ingredient lookup failed: {error}")
+        note_issue("RxNorm")
+        return None
+
 
 def search_rxnorm(query, limit=10, fetch_prices=False):
     """
@@ -71,6 +109,7 @@ def search_rxnorm(query, limit=10, fetch_prices=False):
 
         if response.status_code != 200:
             print(f"RxNorm API returned status {response.status_code}")
+            note_issue("RxNorm")
             return []
 
         data = response.json()
@@ -106,10 +145,12 @@ def search_rxnorm(query, limit=10, fetch_prices=False):
 
     except requests.Timeout:
         print(f"RxNorm API timeout after {RXNORM_API_TIMEOUT} seconds")
+        note_issue("RxNorm")
         return []
 
     except Exception as e:
         print(f"Error querying RxNorm API: {e}")
+        note_issue("RxNorm")
         return []
 
 

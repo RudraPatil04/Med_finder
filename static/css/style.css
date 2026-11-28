@@ -729,9 +729,9 @@ p {
 }
 
 .mrp {
+    margin-top: 2px;
     color: var(--muted);
     font-size: 12px;
-    text-decoration: line-through;
 }
 
 .view-pill {
@@ -1364,6 +1364,63 @@ input[type="range"] {
     font-style: italic;
 }
 
+.scan-scores {
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+}
+
+.detected-item.confirmed {
+    box-shadow: inset 4px 0 0 #10b981;
+    padding-left: 12px;
+}
+
+.scan-chips {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin-top: 6px;
+}
+
+.scan-chips > small {
+    width: 100%;
+}
+
+.scan-chip .chip-score {
+    margin-left: 4px;
+    color: var(--muted);
+    font-weight: 600;
+}
+
+.correct-panel {
+    margin-top: 8px;
+}
+
+.correct-form {
+    display: flex;
+    gap: 6px;
+    max-width: 420px;
+}
+
+.correct-form input {
+    flex: 1;
+    min-width: 0;
+    min-height: 34px;
+    padding: 0 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font: inherit;
+    font-size: 13px;
+    color: inherit;
+    background: transparent;
+}
+
+.confirm-summary {
+    margin: 0 0 4px;
+    color: var(--muted);
+    font-size: 13px;
+}
+
 .btn-sm {
     min-height: 34px;
     padding: 0 12px;
@@ -1843,6 +1900,8 @@ input[type="range"] {
 }
 
 .icon {
+    /* Empty by default: an icon name without its own rule shows nothing, never a filled square. */
+    --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'/%3E");
     display: inline-grid;
     width: 1.2em;
     height: 1.2em;
@@ -1860,7 +1919,7 @@ input[type="range"] {
     -webkit-mask: var(--icon) center / contain no-repeat;
 }
 
-.icon-pill { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='M4.2 14.9 14.9 4.2a5 5 0 0 1 7.1 7.1L11.3 22a5 5 0 0 1-7.1-7.1Zm2.1 2.1a2 2 0 0 0 2.8 2.8l4.3-4.3-2.8-2.8Zm6.4-6.4 2.8 2.8 4.3-4.3A2 2 0 1 0 17 6.3Z'/%3E%3C/svg%3E"); }
+.icon-pill { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='M4.2 14.9 14.9 4.2a5 5 0 0 1 7.1 7.1L11.3 22a5 5 0 0 1-7.1-7.1ZM12.7 10.6l2.8 2.8 4.3-4.3A2 2 0 1 0 17 6.3Z'/%3E%3C/svg%3E"); }
 .icon-search { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='m21 19-5.2-5.2a7 7 0 1 0-2 2L19 21ZM5 10a5 5 0 1 1 10 0A5 5 0 0 1 5 10Z'/%3E%3C/svg%3E"); }
 .icon-sparkles { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='m12 2 1.8 5.2L19 9l-5.2 1.8L12 16l-1.8-5.2L5 9l5.2-1.8Zm6 10 1 3 3 1-3 1-1 3-1-3-3-1 3-1ZM5 14l.8 2.2L8 17l-2.2.8L5 20l-.8-2.2L2 17l2.2-.8Z'/%3E%3C/svg%3E"); }
 .icon-mic { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='M12 14a4 4 0 0 0 4-4V6a4 4 0 1 0-8 0v4a4 4 0 0 0 4 4Zm7-4a7 7 0 0 1-14 0H3a9 9 0 0 0 8 8.94V22h2v-3.06A9 9 0 0 0 21 10Z'/%3E%3C/svg%3E"); }
@@ -1884,7 +1943,11 @@ input[type="range"] {
 .icon-file { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='M6 2h8l4 4v16H6Zm7 1.5V7h3.5Z'/%3E%3C/svg%3E"); }
 .icon-send { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='M2 21 23 12 2 3v7l13 2-13 2Z'/%3E%3C/svg%3E"); }
 .icon-message { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='M4 4h16v12H7l-3 3Zm2 2v8h12V6Z'/%3E%3C/svg%3E"); }
-.icon-twitter, .icon-github, .icon-linkedin, .icon-mail { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' d='M4 4h16v16H4Z'/%3E%3C/svg%3E"); }
+.icon-shuffle { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' fill-rule='evenodd' d='M7 4 3 8l4 4V9h11V7H7Zm10 8v3H6v2h11v3l4-4Z'/%3E%3C/svg%3E"); }
+.icon-x { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' fill-rule='evenodd' d='M6.4 5 5 6.4 10.6 12 5 17.6 6.4 19l5.6-5.6 5.6 5.6 1.4-1.4-5.6-5.6L19 6.4 17.6 5 12 10.6Z'/%3E%3C/svg%3E"); }
+.icon-package { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' fill-rule='evenodd' d='M12 2 3 6.5v11L12 22l9-4.5v-11Zm0 2.2 6.3 3.1L12 10.5 5.7 7.3ZM5 9l6 3v7.6l-6-3Zm14 0v7.6l-6 3V12Z'/%3E%3C/svg%3E"); }
+.icon-trending-down { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' fill-rule='evenodd' d='M3 7.4 4.4 6l5.6 5.6 3-3 6 6V12h2v7h-7v-2h2.6L13 11.4l-3 3Z'/%3E%3C/svg%3E"); }
+.icon-alert-circle { --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='black' fill-rule='evenodd' d='M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Zm0 2a8 8 0 1 1 0 16 8 8 0 0 1 0-16Zm-1 3h2v7h-2Zm0 9h2v2h-2Z'/%3E%3C/svg%3E"); }
 
 @keyframes pulse-ring {
     0% { box-shadow: 0 0 0 0 rgba(20, 184, 166, 0.5); }
@@ -2048,10 +2111,22 @@ input[type="range"] {
 
     .result-row {
         align-items: flex-start;
+        flex-wrap: wrap;
+    }
+
+    .result-row > div:nth-child(2) {
+        flex: 1;
+        min-width: 0;
     }
 
     .result-row .price-row {
-        display: none;
+        flex-basis: 100%;
+        margin-left: 82px;
+        text-align: left;
+    }
+
+    .result-row .price {
+        font-size: 18px;
     }
 
     .bubble {
@@ -2373,6 +2448,13 @@ input[type="range"] {
     color: #b45309;
 }
 
+/* An estimate from unconfirmed catalog prices: outlined, not filled like a verified saving. */
+.savings-badge.estimated {
+    background: transparent;
+    color: #475569;
+    border: 1px dashed #94a3b8;
+}
+
 .comparison-details {
     display: flex;
     flex-wrap: wrap;
@@ -2397,6 +2479,40 @@ input[type="range"] {
     padding: 8px 16px;
     font-size: 13px;
 }
+
+.search-notice {
+    margin-bottom: 22px;
+    padding: 16px 20px;
+    border-radius: 16px;
+    border: 1px solid #fcd34d;
+    background: #fffbeb;
+    color: #78350f;
+}
+
+.search-notice p { margin: 6px 0 0; }
+
+.search-correction {
+    margin: 0 0 16px;
+    padding: 12px 16px;
+    border-radius: 12px;
+    border: 1px solid #bfdbfe;
+    background: #eff6ff;
+    color: #1e3a8a;
+}
+
+.search-correction .link-button {
+    border: 0;
+    background: none;
+    padding: 0;
+    color: #1d4ed8;
+    text-decoration: underline;
+    cursor: pointer;
+    font: inherit;
+}
+
+.notice-related { margin: 10px 0 0; padding-left: 18px; }
+
+.price-missing { font-size: 1.05rem; color: #64748b; }
 
 .cheaper-panel {
     margin-bottom: 22px;
@@ -2498,6 +2614,12 @@ input[type="range"] {
 
 .cheaper-reference .eyebrow {
     margin: 0 0 4px;
+}
+
+.cheaper-loading {
+    margin: 0;
+    font-size: 14px;
+    color: var(--muted);
 }
 
 .cheaper-reference-note {
@@ -2624,4 +2746,117 @@ button,
         transition-duration: 0.01ms !important;
         scroll-behavior: auto !important;
     }
+}
+
+/* Collapsed list of unpriced same-ingredient brands in the Alternatives popup */
+.more-brands summary { cursor: pointer; padding: 0.6rem 0; }
+.more-brands-hint { color: var(--text-secondary, #64748b); font-size: 0.9em; }
+.more-brands-list { margin: 0.5rem 0 0; padding-left: 1.2rem; line-height: 1.7; }
+
+/* ========================================
+   MEDICINE PICTURES: listing photo or a drawing of the dosage form
+   ======================================== */
+
+.gradient-g {
+    background: linear-gradient(135deg, #94a3b8, #475569);
+}
+
+.med-art {
+    display: grid;
+    place-items: center;
+    width: 84px;
+    height: 84px;
+    border-radius: 24px;
+    background: rgba(255, 255, 255, 0.22);
+    color: #fff;
+}
+
+.med-art svg {
+    width: 58px;
+    height: 58px;
+    filter: drop-shadow(0 4px 8px rgba(15, 23, 42, 0.18));
+}
+
+.medicine-visual.has-photo,
+.medicine-art.has-photo {
+    background: #fff;
+    border-bottom: 1px solid var(--border);
+}
+
+.has-photo .med-art {
+    display: none;
+}
+
+.has-photo .med-photo {
+    visibility: visible;
+}
+
+.med-photo {
+    visibility: hidden;
+    position: absolute;
+    inset: 10px;
+    width: calc(100% - 20px);
+    height: calc(100% - 20px);
+    object-fit: contain;
+}
+
+.has-photo .form-badge {
+    background: rgba(15, 23, 42, 0.6);
+    z-index: 1;
+}
+
+.has-photo .rx-badge {
+    border: 1px solid rgba(225, 29, 72, 0.25);
+    z-index: 1;
+}
+
+.result-row .medicine-visual.has-photo {
+    border: 1px solid var(--border);
+}
+
+.result-row .med-art {
+    width: 48px;
+    height: 48px;
+    border-radius: 14px;
+}
+
+.result-row .med-art svg {
+    width: 34px;
+    height: 34px;
+}
+
+.result-row .med-photo {
+    inset: 4px;
+    width: calc(100% - 8px);
+    height: calc(100% - 8px);
+}
+
+.medicine-art .med-art {
+    width: 140px;
+    height: 140px;
+    border-radius: 36px;
+}
+
+.medicine-art .med-art svg {
+    width: 96px;
+    height: 96px;
+}
+
+.medicine-meta .meta-chip {
+    border-radius: 999px;
+    background: rgba(15, 118, 110, 0.08);
+    color: var(--text);
+    padding: 3px 9px;
+    font-weight: 600;
+}
+
+.detail-visual .medicine-art {
+    width: 100%;
+    max-width: 420px;
+    margin-inline: auto;
+}
+
+.medicine-art.has-photo {
+    border: 1px solid var(--border);
+    border-bottom-width: 1px;
 }

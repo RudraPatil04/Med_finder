@@ -1105,3 +1105,233 @@ Files: `backend/ocr_service.py`, `static/js/app.js`, `static/css/style.css`,
   and `test_backfill_compositions` pass.
 - Verified with a rendered image through `/api/ocr` and in the browser on `/scanner`: the
   detected row shows the warning badge and "1 medicine matched."; asset version `20261111-3`.
+
+## Update — handwritten prescription accuracy (2026-11-17)
+
+Google Vision already used `DOCUMENT_TEXT_DETECTION` with `languageHints: ["en"]`; the losses
+were in the image sent and in matching garbled words. Changes in `backend/ocr_service.py`:
+
+- `preprocess_prescription_image()` runs before Vision and Tesseract: EXIF rotation, crop to the
+  bright sheet (Otsu threshold on a 400px copy; only when the sheet is 30–95% of the photo),
+  grayscale, autocontrast (1% cutoff), resize to ~1600–2400px (≤3× upscale), unsharp mask.
+- `normalize_ocr_line()` fixes look-alikes only next to digits (`65O`→650, `l0`→10, `rng`/`mq`→mg)
+  and a single trailing 0/1 after a word (`Dol0`→Dolo). `B12`, `D3`, `Telma40` are left alone.
+  Leading `Rx`, `℞`, `1)` markers are stripped; `T.`/`C.` read as tablet/capsule.
+- Vision per-word confidence is collected and returned per line as `ocr_confidence` (0–100).
+- Lines with no literal match are compared (Levenshtein `fuzz.ratio`, cutoff 72) with every
+  catalog brand first word and ingredient name (`_catalog_vocabulary()`, cached 1h per DB path,
+  empty when tables are missing). Up to 3 `suggestions` are returned per unmatched line. A misspelt
+  ingredient with a printed strength resolves to a single-ingredient product of that strength.
+- Auto-accept only when the top suggestion scores ≥90, is a catalog product, agrees with the printed
+  strength/form and leads rivals by ≥5; it is still `match_type = "possible"`.
+- UI (`static/js/app.js`, `scan_medicine.html`): every detected medicine has Confirm / Change /
+  View / Remove, a "N of M confirmed" live summary, read-confidence and name-similarity text
+  (both computed, never invented), suggestion chips on unmatched lines and a type-to-correct search.
+- `rapidfuzz` added to `requirements.txt`. 30 OCR tests (9 new), all offline.
+
+Not done: a vision-LLM reader (Claude/Gemini returning JSON of medicine/strength/dose) would read
+messy handwriting better than OCR; it needs a new API key, so it is left as an option.
+
+## Update — Gemini reads prescriptions (2026-11-18)
+
+The owner's Google Cloud account needs a prepayment, so Vision is unavailable. `_image_text()` now
+tries **Gemini** first when `GEMINI_API_KEY` is set (free Google AI Studio key, sent in the
+`x-goog-api-key` header, never in the URL or repo; model `gemini-2.5-flash`, override with
+`GEMINI_MODEL`). The preprocessed image is sent with a prompt asking for one medicine line per
+line, as written, with no added medicines or substitutes; `NONE` means no medicines. Any failure
+(network, 429 rate limit, quota) falls back to Google Vision if its key is set, then Tesseract.
+The returned text goes through the same cleanup, fuzzy suggestions and confirm step; Gemini gives
+no per-word confidence, so `ocr_confidence` is null for it. 3 new tests (33 OCR tests).
+
+## Update — Gemini actually used again (2026-11-25)
+
+The owner's scanner kept reading with Tesseract. Two causes: (1) the Gemini commit (`dbee16c`) only
+lived on `claude/project-thread-f86dlf`, never on `feat/search-no-price-notice`, which the owner
+runs; it is now merged onto `claude/project-thread-xx4toi` (asset versions `20261125-1`).
+(2) Google retired `gemini-2.5-flash` for new keys (HTTP 404 "no longer available to new users"),
+so every call failed and fell through. `_gemini_text()` now tries `GEMINI_MODEL` (if set), then
+`gemini-flash-latest`, `gemini-3.5-flash`, `gemini-flash-lite-latest`; 404/429/5xx/timeout moves to
+the next model, other errors (bad key, 400) stop. The free tier answered 503 "high demand" for
+`gemini-flash-latest` during testing, and `gemini-3.5-flash` took ~35 s per page. The server logs
+which models were skipped and why, and says when `GEMINI_API_KEY` is missing from its environment.
+The key is a Windows *user* variable, so a terminal opened before it was set does not see it.
+2 new tests (100 offline tests pass).
+
+## Update — ORS line + scanner accuracy check (2026-11-25)
+
+A real hospital prescription ("Inj 5% Dextrose iv stat", "Adequate fluid intake", "ORS 2 packets")
+showed only Dextrose 5% Infusion. Cause: the catalog has **no ORS product at all** (no "ORS" name,
+no Electral/ORSL, no oral-rehydration composition), so the line fell into "Read but not matched",
+where the word "packets" produced look-alike suggestions (Pacset, Parcet, Paknet-BC).
+Fix in `backend/ocr_service.py`: pack words (packet(s), sachets, pouch, bottle, strip, vial,
+ampoule) are stopwords and "2 packets" is dosage text; `_KNOWN_ABBREVIATIONS` maps `ORS` (also
+`O.R.S.`) to "Oral rehydration salts". A line naming one matches a catalog product whose name has
+the word or whose name/composition has the generic name; otherwise it is listed unmatched with
+`not_in_catalog: true`, no suggestions, and a `note` the UI shows ("read from the prescription,
+but the catalog has no oral rehydration salts product"). 3 new tests; 107 offline tests pass.
+Asset version `20261125-2`.
+
+Accuracy check (synthetic only, no real photos in the repo): 9 rendered prescriptions in 8
+handwriting-style fonts with blur/rotation/noise, 26 medicine lines (24 brands + Dextrose + ORS),
+scored with the app's own parser. Gemini: 26/26 correct product and strength. Tesseract: 19
+correct, 2 only as the top suggestion, 1 wrong strength (Dolo "€50"), 4 missed; 0 extra
+medicines for either. Fonts are far neater than real handwriting, so these are upper bounds.
+Gemini free tier answered 503 for `gemini-flash-latest` on every page; pages took 11-65 s.
+
+### Real-photo check (2026-11-25, same day)
+8 unique real photos from the owner (10 sent, 2 duplicates). Ground truth was read by eye; two
+photos (dense Hindi/Devanagari, and one where Gemini itself answered "Unclear") were left out, and
+one illegible line, leaving 23 medicine lines. Gemini transcribed 20/23 names correctly. After the
+parser, 9/23 were the right catalog product, 1 was offered as the top suggestion, 0 wrong, 13
+missed: 10 because the medicine is not in the catalog (Ultracal-D, Cartilix, Relentus, Vonalong,
+Vitazyme, Enzabil C, Ultrafen Plus, Pantakind Raft, PND otic, …) and 3 that Gemini misread or
+skipped. Tesseract: 0/23 correct, 2 wrong. Before this round's fixes the parser had 5 correct and
+5 wrong on the same Gemini text. Fixes: `Syp` is a syrup hint, syrup/injection hints accept
+suspension/infusion forms (`_FORM_SYNONYMS`), a printed form outranks strength when ranking,
+`(250/5)` on a syrup line is 250 mg, direction words (pain, otic, ear, right, …) are stopwords, and
+a match is `exact` only when the printed strength is confirmed by the row. Gemini free tier hit
+HTTP 429 (quota) after ~20 pages in one afternoon. 109 offline tests pass.
+
+## Update — scanner accuracy round 2 (2026-11-26)
+
+Branch `claude/project-thread-a9csqw` (from `claude/project-thread-of3tt4`), `backend/ocr_service.py`:
+- **Extra Gemini keys.** `GEMINI_API_KEY_2` … `GEMINI_API_KEY_9` are optional. A key that answers
+  429 on every model rests for an hour (`GEMINI_KEY_COOLDOWN_SECONDS`) and the next key is used; a
+  rejected key (400/401/403) also hands over. The log names the variable ("GEMINI_API_KEY used up
+  its free quota; switching to GEMINI_API_KEY_2"), never the key. 503/timeouts do not switch keys.
+  Each key must come from its own Google Cloud project (quota is per project). Stays free tier.
+- **Structured Gemini answer.** The prompt asks for JSON `[{line, form, generic}]`
+  (`responseMimeType: application/json`); plain-text answers still work. `generic` is Gemini's
+  own knowledge, so it is used only (a) to match a line that itself prints that generic, or
+  (b) to list catalog products recorded with that composition for a brand missing from the catalog,
+  as an `unmatched_lines` entry with `generic_source: "gemini"` and a note saying the composition is
+  not verified and same composition is not interchangeability.
+- **Gemini lines count as medicine lines** (no printed strength/form needed), and Gemini's `form`
+  fills in a missing form hint. `2 tsf` is a liquid dose (syrup hint).
+- **Live catalog lookup for missing brands** (Gemini lines only, at most 4 lookups per scan,
+  `MEDFINDER_SCAN_LIVE_CATALOG=0` turns it off): the printed brand words (before the first number)
+  are looked up in DrugDB, then PharmEasy, via the search page's own clients and
+  `save_catalog_medicine`; only listings whose name starts with the printed brand as whole words are
+  saved, so every added row carries its listing's name/form/strength/composition and `api_source`.
+  Misses are cached as `scan-live:<name>`. When a local brand row lacks the printed form ("Pantakind
+  Raf 2 tsf" vs Pantakind tablets) the live catalog is asked once for the fuller product.
+- **ORS** now matches a catalog product listing sodium + potassium chloride with dextrose/glucose
+  (`matched_via: "composition"`), looking it up live once if the catalog has none.
+- **Top three when unsure.** Any non-exact match carries up to two `alternatives` (other products of
+  the same printed brand, or other products of the same printed generic).
+
+Re-score on the same 23 real-photo lines, same stored Gemini transcription (so only matching
+changed): right product **8 → 13**, wrong 0 → 0. Gained: ORS, Pantakind Raft, Vonalong, Vitazyme,
+Celecoxib. Enzabil matches the tablet; the line may mean Enzabil C syrup, so it is not counted.
+Still missed: 6 brands absent from every Indian catalog checked (Ultrafen Plus, Relentus,
+Ultracal-D ×2, Cartilix — Bangladesh; PND otic — Philippines) and 3 lines Gemini misread or skipped
+(Omeprazole, Frisium, Tonoferon). The `generic` field could not be scored fairly: the main Gemini
+models were out of free quota and `gemini-flash-lite-latest` reads these photos much worse.
+Rows added to the real DB by the live lookups: Ranbaxy ORS, 7 celecoxib 200 mg products,
+Vonalong 10/20, Vitazyme capsule/drops, Enzabil, Pantakind variants incl. Pantakind Raft. Misread
+lookups during testing (Sevelamer "Sevent", Pneumovax, Lycozon) were deleted. 111 offline tests pass.
+
+## Update — search accuracy (2026-11-27)
+
+Measured with `python -m eval.search_eval all` (local search only, no API fallback, nothing
+written). Original 72-query set from 2026-11-26; held-out 51-query set written before any change.
+
+| Set | Before top-1 / top-3 | After top-1 / top-3 |
+|---|---|---|
+| Original 72 | 53 (73.6%) / 56 (77.8%) | 70 (97.2%) / 70 (97.2%) |
+| Held-out 51 | 37 (72.5%) / 38 (74.5%) | 49 (96.1%) / 49 (96.1%) |
+
+What changed:
+- `backend/services/search_ranking.py` (new): query parsing (`pan40`/`Telma-40` -> `pan 40`;
+  `B12` stays glued), Python ranking of candidate rows (exact name words > name starts with the
+  words > brand equal > first word prefix > word later in name > substring; any tier whose
+  strength does not match drops by 5; strength is read from the name *or* the strength column),
+  family size (number of catalog names using the first word) breaks ties among partial matches,
+  and spelling correction (rapidfuzz ratio >= 80, same first letter, weighted by product count,
+  threshold 90).
+- `medicine_service`: generic-ingredient path only when the query *is* an ingredient (exact,
+  salt-stripped, synonym such as amoxicillin->amoxycillin, or >= 80% of one ingredient name).
+  Brand stems (`Atorva`, `Telma`) now take the name path. `_record_ingredient_keys` no longer
+  invents an ingredient from an Indian brand name (only RxNorm "10 MG" / " / " names), so
+  Ondem/Metrogyl return all their rows.
+- `search_medicines_detailed(..., allow_correction=True)` is used by `/api/search`; it returns
+  `corrected_query` and the page says "No exact match for X. Showing results for Y" with a
+  "Search only for X" button (`exact=1`). `search_medicines` (OCR, assistant) never corrects.
+- Data: `etl/add_listed_brands.py --apply Zincovit Digene "Liv 52" "Neurobion Forte" Electral`
+  saved 37 PharmEasy listings (ids 348260-348296). Electral and the Neurobion Forte injection
+  carry compositions; Zincovit, Digene, Liv 52 and the Neurobion Forte tablet are search-only
+  rows (`composition NULL`, `composition_complete 0`) because PharmEasy lists no composition.
+  Backup before the insert: `database/medfinder.before-listed-brands-20261127.db`.
+
+Caveats:
+- 5 of the 17 original-set gains are data (the added brands), not code. Code alone: 65/72.
+- Eval rule change: brand checks now treat `-` as a space (`Montair-LC` = `Montair LC`).
+- Remaining misses: `Dol` (top is the real brand "Dol 80"), `Combi` (Combikit ranks over
+  Combiflam), `Hifen` (real brand "Hifen 250"), `Brufin` (no confident correction).
+- A misspelling of a missing brand can be corrected to a look-alike product; the banner and the
+  exact-search button are the guard. Threshold 90 keeps `Electral` from becoming `Electril`.
+
+## Update — alternative-medicines accuracy (2026-11-27)
+
+New offline eval `python -m eval.alternatives_eval` (59 hand-picked cases: 24 single-ingredient,
+8 combinations, 11 liquids/drops/sachets, 3 form variants, 8 that must be blocked, 5 with no
+composition) and `python -m eval.alternatives_eval sample 40` (held-out, products picked by a
+hash of the id). It scores what `/api/substitutes/<id>?limit=10&live=0` shows, with enrichment
+stubbed. The checker re-parses raw `composition` text with decimals and units, reads form
+variants and release markers from the name, and measures recall against every catalog product
+that agrees and has a price + pack size.
+
+| Set | Before precision / recall / restricted blocked | After |
+|---|---|---|
+| Hand-picked 59 | 682/741 (92.0%) / 23,447/29,775 (78.7%) / 4 of 8 | 673/673 (100%) / 29,662/29,773 (99.6%) / 8 of 8 |
+| Held-out 40 | 497/512 (97.1%) / 15,241/19,775 (77.1%) / – | 531/531 (100%) / 19,676/19,774 (99.5%) / – |
+
+Known brands (Crocin 650 for Dolo 650, Clavam for Augmentin, ...): 55 of 55 in the candidate set
+before and after (not necessarily in the 10 shown).
+
+What changed:
+- `medicine_data`: `PR`, `DSR`, `SA` count as modified release (Pan-D PR, Glycomet-GP PR, Amlong MT
+  PR were compared with plain products); `thyroxine` is narrow therapeutic index (Thyronorm reads
+  "Thyroxine", so it was compared); respules/rotacaps/nebuliser/inhalation names are inhaled forms;
+  new `form_variant()` (DT/dispersible, MD/ODT, VT/vaginal, chewable, effervescent, sublingual).
+  6,245 complete-composition products are newly restricted (5,323 MR, 330 inhaled, 592 thyroxine).
+- `recommendation_service._candidate_rows`: candidates come through the reference's rarest
+  ingredient instead of `lower(strength) = ?`, because combination rows fill the strength column
+  inconsistently ("200mg" vs "200mg/500mg"); 6,326 true matches were missed that way. The strength
+  columns must still agree: equal, or both only restate amounts from the identical composition.
+  Raw ingredient strengths are compared with decimals, because `ingredient_strength_norm` drops
+  the point (12.5mg, 125mg and 1.25mg all read "125mg"). Form variants must match.
+- Jan Aushadhi rows of another form variant (e.g. orally disintegrating) are not offered.
+
+Caveats:
+- The checker and the fixes encode the same rules, so 100% means "no violation of these rules",
+  not clinical equivalence. The catalog's own errors are invisible to it.
+- PharmEasy spot check (46 references + 1 shown alternative each): 43 agree, 36 not listed, 11
+  differ; most differences were the crude name lookup picking another product. One real error:
+  every `Ciplox` / `Cifran` row is recorded as **Ofloxacin** (should be ciprofloxacin; the catalog
+  has only 26 ciprofloxacin rows). About 600 "Ofloxacin" tablets at 250/500/750/1000 mg are probably
+  ciprofloxacin. Present in the 2026-11-15 backup, so it comes from the source data. Not fixed.
+- Liquids: almost none have a pack size, so they only get the same-pack review list, never a
+  price-ranked one. `Azithral 200 Liquid` has no dosage form and gets nothing.
+- Missing composition (Zincovit, Digene, Neurobion Forte tablet, Betnovate, Moxicip): no
+  alternatives at all, as designed.
+
+## 2026-11-27 — Real product photos on demand; Rs. 1 placeholder prices cleared
+
+Photos: `backend/services/image_lookup.py` finds the PharmEasy listing of the exact same product
+(brand or title prefix, no extra words in the title, same ingredient+strength signature, same form,
+same release type) and stores its photo in `medicines.image_url`. Placeholder, reused and non-PharmEasy
+URLs are rejected. The UI asks `GET /api/medicine-images?ids=…` (≤24 ids, 5 s budget) after rendering
+any card that has no photo; attempts are cached as `image:<id>` (hit 365 d, miss 7 d), and request
+errors start a 15-minute cooldown. Live price lookups also store the matched listing's photo.
+`etl/prefill_images.py --apply` pre-fills the top 12 results of every eval query plus the fresh-priced
+demo set, one PharmEasy search per brand.
+
+Measured (`python -m eval.image_coverage`, 100 queries, first 12 cards): 51.5% of cards had a real
+photo before, 53.0% after the batch; top result 66% both times. The batch stopped at the 151st
+PharmEasy search (HTTP 405) having stored 9 photos from 417 rows. Most missing photos belong to
+long-tail brands PharmEasy does not list, or lists without a photo; the matching is not the limit.
+
+Prices: `etl/clear_placeholder_prices.py --apply` set 61 source-dataset prices of exactly Rs. 1 to NULL
+(same-composition products cost a median 11x more); old values are in `placeholder_prices`,
+`--restore` puts them back. Re-run after `etl/build_database.py`.

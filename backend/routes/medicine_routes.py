@@ -10,6 +10,7 @@ from flask import Blueprint, jsonify, request
 
 from backend.services.medicine_service import (
     search_medicines,
+    search_medicines_detailed,
     suggest_functional_medicines,
     get_medicine,
     search_by_brand,
@@ -22,9 +23,15 @@ from backend.assistant_service import process_assistant_query
 from backend.ocr_service import parse_prescription_medicines
 from backend.recommendation_service import get_substitutes
 from backend.services.india_medicine_api import search_live_alternatives
+from backend.medicine_data import parse_composition, restricted_reason
 from backend.services.price_comparison_service import compare_current_prices
 from backend.services.price_enrichment_service import persist_reference_price
 from backend.services.enrichment_worker import request_enrichment
+from backend.services.live_price_refresh import substitutes_with_live_prices, live_prices_enabled
+from backend.services.image_lookup import MAX_IDS_PER_REQUEST, fill_images
+
+from backend.services.external_api_service import pop_issues
+from backend.services.search_notice_service import related_by_ingredient, build_notice
 
 medicine_bp = Blueprint("medicine", __name__)
 
@@ -52,12 +59,26 @@ def search():
             "message": "Search keyword is required."
         }), 400
 
-    medicines = search_medicines(keyword)
+    # exact=1 searches the words as typed, without spelling correction.
+    exact = request.args.get("exact", "").strip() == "1"
+
+    pop_issues()
+    result = search_medicines_detailed(keyword, allow_correction=not exact)
+    rows = [dict(row) for row in result["rows"]]
+    corrected = result.get("corrected_query")
+    ingredient, related = related_by_ingredient(rows)
+    notice = build_notice(corrected or keyword, rows, pop_issues(), ingredient, related)
 
     return jsonify({
         "success": True,
-        "count": len(medicines),
-        "data": [dict(row) for row in medicines]
+        "count": len(rows),
+        "data": rows,
+        "notice": notice,
+        "related": related,
+        # Set when nothing matched the typed words and a corrected spelling was
+        # searched instead; the page must say so.
+        "corrected_query": corrected,
+        "original_query": keyword,
     })
 
 
@@ -111,6 +132,24 @@ def medicine_details(medicine_id):
     })
 
 
+@medicine_bp.route("/medicine-images", methods=["GET"])
+def medicine_images():
+    """Verified product photos for rows that have none (looked up once, then cached in the DB)."""
+    ids = []
+    for part in (request.args.get("ids") or "").split(","):
+        if part.strip().isdigit() and int(part) not in ids:
+            ids.append(int(part))
+    ids = ids[:MAX_IDS_PER_REQUEST]
+    if not ids or not live_prices_enabled():
+        return jsonify({"success": True, "images": {}})
+    try:
+        rows = [dict(row) for row in (get_medicine(i) for i in ids) if row is not None]
+        found = fill_images(rows)
+    except Exception:
+        found = {}
+    return jsonify({"success": True, "images": {str(k): v for k, v in found.items()}})
+
+
 # ==========================================================
 # Generic / Cheaper Substitutes
 # ==========================================================
@@ -119,9 +158,25 @@ def medicine_details(medicine_id):
 def medicine_substitutes(medicine_id):
 
     limit = request.args.get("limit", 5, type=int)
-    result = get_substitutes(medicine_id, limit=limit)
+    # live=0 skips the price lookups and answers from stored prices only.
+    if request.args.get("live", "1") == "0":
+        result = get_substitutes(medicine_id, limit=limit)
+    else:
+        result = substitutes_with_live_prices(medicine_id, limit=limit)
 
     return jsonify(result)
+
+
+def _restricted_live_response(medicine):
+    """Restricted classes get no live listings either, same as /api/substitutes."""
+    medicine = dict(medicine)
+    names = [row["ingredient_name"] for row in parse_composition(medicine.get("composition"))]
+    reason = restricted_reason(medicine, names)
+    if not reason:
+        return None
+    return {"success": True, "restricted": True, "comparison_available": False, "reference": None,
+            "count": 0, "matches": [],
+            "message": f"Other products are not listed because {reason}. Ask your doctor or pharmacist."}
 
 
 @medicine_bp.route("/live-alternatives/<int:medicine_id>", methods=["GET"])
@@ -130,6 +185,9 @@ def live_medicine_alternatives(medicine_id):
     medicine = get_medicine(medicine_id)
     if medicine is None:
         return jsonify({"success": False, "message": "Medicine not found.", "matches": []}), 404
+    blocked = _restricted_live_response(medicine)
+    if blocked:
+        return jsonify(blocked)
     limit = request.args.get("limit", 10, type=int)
     return jsonify(search_live_alternatives(medicine, limit=limit))
 
@@ -140,6 +198,9 @@ def live_price_alternatives(medicine_id):
     medicine = get_medicine(medicine_id)
     if medicine is None:
         return jsonify({"success": False, "message": "Medicine not found.", "matches": []}), 404
+    blocked = _restricted_live_response(medicine)
+    if blocked:
+        return jsonify(blocked)
     limit = request.args.get("limit", 10, type=int)
     result = compare_current_prices(medicine, limit=limit)
     if result.get("reference") and float(medicine["price"] or 0) <= 0:
