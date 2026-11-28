@@ -10,6 +10,7 @@
         rxOnly: false,
         page: 1,
         pageSize: 12,
+        query: "",
         searchRequestId: 0
     };
 
@@ -276,6 +277,7 @@
         const runSearchSoon = debounce(function () {
             const query = input.value.trim();
             if (query.length >= 2) runSearch(query);
+            else if (!query) showSearchPrompt();
         }, 280);
         input.addEventListener("input", runSearchSoon);
 
@@ -318,56 +320,107 @@
 
         document.getElementById("pagination").addEventListener("click", function (event) {
             const button = event.target.closest("button");
-            if (!button) return;
+            if (!button || button.disabled) return;
             if (button.hasAttribute("data-page-next")) {
                 state.page += 1;
+            } else if (button.hasAttribute("data-page-prev")) {
+                state.page -= 1;
             } else {
                 state.page = Number(button.dataset.page || 1);
             }
             renderSearchResults();
+            const panel = document.querySelector(".results-panel");
+            if (panel) panel.scrollIntoView({ behavior: "smooth", block: "start" });
+        });
+
+        // Example searches in the empty / no-results states.
+        document.getElementById("searchResults").addEventListener("click", function (event) {
+            const button = event.target.closest("[data-example-query]");
+            if (!button) return;
+            const query = button.getAttribute("data-example-query");
+            input.value = query;
+            runSearch(query);
         });
 
         if (initialQuery) {
             runSearch(initialQuery);
         } else {
-            loadCheapestForSearch();
+            showSearchPrompt();
         }
     }
 
-    async function loadCheapestForSearch() {
-        const container = document.getElementById("searchResults");
-        clearCheaperAlternatives();
-        container.innerHTML = skeletonCards(6);
-        const data = await fetchJson("/api/cheapest");
-        if (!data || !data.success) {
-            container.innerHTML = emptyState("Search is ready", "Enter a medicine name, brand, or composition.");
-            return;
+    // Brands known to return results and a price comparison in the demo
+    // catalog. Ciplox / Cifran are left out: their rows are mislabelled.
+    const EXAMPLE_SEARCHES = ["Aceforce", "Dolo 650", "Telma 40", "Pan 40", "Azithral 500", "Metformin"];
+
+    function exampleSearchButtons() {
+        return '<div class="example-searches" role="group" aria-label="Example searches"><span>Try:</span>' +
+            EXAMPLE_SEARCHES.map(function (q) {
+                return '<button type="button" data-example-query="' + escapeHtml(q) + '">' + escapeHtml(q) + '</button>';
+            }).join("") + '</div>';
+    }
+
+    function resetSearchResults() {
+        state.medicines = [];
+        state.filtered = [];
+        state.page = 1;
+        const pagination = document.getElementById("pagination");
+        if (pagination) {
+            pagination.hidden = true;
+            pagination.innerHTML = "";
         }
-        state.medicines = data.data;
-        filterResults();
+    }
+
+    // No query typed: no list, no count, no pages, just a prompt.
+    function showSearchPrompt() {
+        state.searchRequestId += 1; // drop any search still in flight
+        resetSearchResults();
+        clearCheaperAlternatives();
+        renderSearchCorrection(null);
+        renderSearchNotice(null);
+        setText("resultCount", "Search for a medicine");
+        document.getElementById("searchResults").innerHTML =
+            '<div class="empty-state panel surface-only"><span class="feature-icon"><span class="icon icon-search"></span></span>' +
+            '<h2>Search for a medicine</h2>' +
+            '<p>Type a brand name, a composition (such as paracetamol) or what it is used for. ' +
+            'Results show the price, pack size and form of each product.</p>' +
+            exampleSearchButtons() + '</div>';
+    }
+
+    function noResultsState(query) {
+        return '<div class="empty-state panel surface-only"><span class="feature-icon"><span class="icon icon-search"></span></span>' +
+            '<h2>No medicines found' + (query ? ' for "' + escapeHtml(query) + '"' : '') + '</h2>' +
+            '<p>Check the spelling, or search by brand name or ingredient.</p>' +
+            exampleSearchButtons() + '</div>';
     }
 
     async function runSearch(query, exact) {
         const container = document.getElementById("searchResults");
         const count = document.getElementById("resultCount");
         if (!query) {
-            loadCheapestForSearch();
+            showSearchPrompt();
             return;
         }
 
+        state.query = query;
         container.innerHTML = skeletonCards(6);
         count.textContent = "Searching…";
+        const pagination = document.getElementById("pagination");
+        if (pagination) pagination.hidden = true;
         const requestId = ++state.searchRequestId;
         const data = await fetchJson("/api/search?q=" + encodeURIComponent(query) + (exact ? "&exact=1" : ""));
         // Ignore older responses when a user types a more specific query quickly.
         if (requestId !== state.searchRequestId) return;
         renderSearchCorrection(data && data.corrected_query, query);
         if (!data || !data.success) {
-            container.innerHTML = emptyState("No results found", "Try a medicine name, brand, or composition.");
+            resetSearchResults();
+            renderSearchNotice(null);
+            clearCheaperAlternatives();
+            container.innerHTML = noResultsState(query);
             count.textContent = "0 results";
             return;
         }
-        state.medicines = data.data;
+        state.medicines = data.data || [];
         state.page = 1;
         renderSearchNotice(data.notice, data.related);
         filterResults();
@@ -713,17 +766,23 @@
         const pagination = document.getElementById("pagination");
         if (!container) return;
 
-        count.textContent = state.filtered.length + (state.filtered.length === 1 ? " result" : " results");
         container.classList.toggle("list-mode", state.view === "list");
         container.dataset.viewMode = state.view;
 
-        if (!state.filtered.length) {
+        const total = state.filtered.length;
+        if (!total) {
+            count.textContent = "0 results";
             container.innerHTML = state.medicines.length
                 ? emptyState("No medicines match these filters", "Try another form, or move the price slider to Any price.")
-                : emptyState("No medicines found", "Check the spelling, or search by brand or ingredient.");
+                : noResultsState(state.query);
             pagination.hidden = true;
+            pagination.innerHTML = "";
             return;
         }
+
+        // Only pages that hold results exist; keep the current page inside them.
+        const totalPages = Math.max(1, Math.ceil(total / state.pageSize));
+        state.page = Math.min(Math.max(1, Math.floor(Number(state.page) || 1)), totalPages);
 
         const start = (state.page - 1) * state.pageSize;
         const pageItems = state.filtered.slice(start, start + state.pageSize);
@@ -731,16 +790,25 @@
             return state.view === "list" ? renderMedicineRow(item, index) : renderMedicineCard(item, index);
         }).join("");
 
-        pagination.hidden = state.filtered.length <= state.pageSize;
-        pagination.querySelectorAll("[data-page]").forEach(function (button) {
-            const isCurrent = Number(button.dataset.page) === state.page;
-            button.classList.toggle("active", isCurrent);
-            if (isCurrent) {
-                button.setAttribute("aria-current", "page");
-            } else {
-                button.removeAttribute("aria-current");
-            }
-        });
+        const noun = total === 1 ? " result" : " results";
+        count.textContent = totalPages > 1
+            ? "Showing " + (start + 1) + "–" + (start + pageItems.length) + " of " + total + noun
+            : total + noun;
+
+        if (totalPages <= 1) {
+            pagination.hidden = true;
+            pagination.innerHTML = "";
+            return;
+        }
+        let html = '<button type="button" data-page-prev' + (state.page === 1 ? " disabled" : "") + '>Previous</button>';
+        for (let page = 1; page <= totalPages; page += 1) {
+            const current = page === state.page;
+            html += '<button type="button" data-page="' + page + '" aria-label="Page ' + page + '"' +
+                (current ? ' class="active" aria-current="page"' : "") + ">" + page + "</button>";
+        }
+        html += '<button type="button" data-page-next' + (state.page === totalPages ? " disabled" : "") + '>Next</button>';
+        pagination.innerHTML = html;
+        pagination.hidden = false;
     }
 
     function setupMedicineDetail() {

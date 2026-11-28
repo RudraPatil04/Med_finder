@@ -56,13 +56,8 @@
                     <p>Results show the price, pack size and form of each product.</p>
                 </div>
             </div>
-            <nav class="pagination" id="pagination" aria-label="Search result pages" hidden>
-                <button type="button" data-page="1" class="active" aria-label="Page 1">1</button>
-                <button type="button" data-page="2" aria-label="Page 2">2</button>
-                <button type="button" data-page="3" aria-label="Page 3">3</button>
-                <button type="button" data-page="4" aria-label="Page 4">4</button>
-                <button type="button" data-page-next>Next</button>
-            </nav>
+            {# Page buttons are built by app.js from the real result count. #}
+            <nav class="pagination" id="pagination" aria-label="Search result pages" hidden></nav>
         </section>
     </div>
 </section>

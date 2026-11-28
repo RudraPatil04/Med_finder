@@ -1153,6 +1153,42 @@ input[type="range"] {
     line-height: 1.6;
 }
 
+.example-searches {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    align-items: center;
+    gap: 8px;
+    margin-top: 18px;
+}
+
+.example-searches span {
+    color: var(--muted);
+    font-size: 13px;
+    font-weight: 700;
+}
+
+.example-searches button {
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: #fff;
+    padding: 7px 14px;
+    color: var(--primary);
+    font-size: 13px;
+    font-weight: 800;
+    cursor: pointer;
+}
+
+.example-searches button:hover,
+.example-searches button:focus-visible {
+    border-color: var(--primary);
+}
+
+.pagination button:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
 .upload-zone {
     min-height: 380px;
     border-radius: 28px;
