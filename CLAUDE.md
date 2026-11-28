@@ -8,6 +8,54 @@ advice tool, does not decide therapeutic equivalence, and does not sell medicine
 `AGENTS.md` (1,100 lines) is the dated changelog of every change, its measured numbers and its
 caveats. This file is the current state; read AGENTS.md when you need the *why* behind a rule.
 
+## Project handoff (written 2026-11-28; read this before anything else)
+
+The owner (Vineet, GitHub `RudraPatil04`) has moved to a different Claude account. This section
+carries over what earlier Claude sessions learned, so a new session does not have to ask again.
+Where it differs from older sections below, this section is newer.
+
+**What it is.** Med Finder: search a medicine, see cheaper generic alternatives with the same
+composition, their prices, and a prescription scanner. Repo `RudraPatil04/Med_finder`; Vineet's
+local checkout is `D:\MED_FINDER` (Windows). Run with `venv\Scripts\python.exe -m backend.app`.
+168 tests pass on `claude/project-thread-ygw48f`.
+
+**Urgency.** A professor demo is coming and Vineet calls it do-or-die. Prefer small, safe, tested
+changes over new features or refactors.
+
+**Branches (no PRs opened yet).**
+- Chain, each built on the previous: `claude/project-thread-cbb6yv` → `claude/project-thread-f86dlf`
+  (prescription OCR: preprocessing, fuzzy suggestions, confirm step) → `claude/project-thread-1aw1u1`
+  (search accuracy) → `claude/project-thread-4by47q` → `claude/project-thread-nsu8vn` →
+  `claude/project-thread-ygw48f` (latest; contains the whole chain).
+- Separate: `claude/project-thread-xx4toi` (Gemini model fallback chain; `gemini-2.5-flash` retired).
+- Vineet's local `feat/search-no-price-notice` has an uncommitted `backend/ocr_service.py` edit and an
+  unpushed commit `f9c1f8d` (requirements pins relaxed for Python 3.12). It exists only on his laptop.
+
+**Decisions already made.**
+- Prefix repair (`etl/repair_ingredient_prefixes.py --apply`) has been applied to the real database:
+  6,118 medicines fixed. (Supersedes "Prefix repair not applied" further down.)
+- Jan Aushadhi prices imported, dated 2026-11-16.
+- Live PharmEasy price-on-search is built, but PharmEasy rate-limits (HTTP 405) after about 800 lookups.
+- 19 to 21 demo medicines have verified savings that stay current until about 16 Dec 2026.
+- Vineet approved (2026-11-15) a clearly labelled "estimated saving vs catalog price" where no verified
+  saving exists. This relaxes rule 2 for that labelled case only; verified savings still need two
+  current prices.
+- Google Vision is out (Google Cloud wants a Rs 1,000 prepayment). The scanner uses Gemini via a free
+  AI Studio key in `GEMINI_API_KEY`, falling back Gemini → Vision → Tesseract. On Vineet's laptop
+  `GEMINI_API_KEY` is a Windows user variable, so only terminals opened after it was set can see it.
+
+**Measured results.**
+- Search: 97.2% top-1 on a 72-query set, 96.1% on 51 held-out queries.
+- Alternatives: 100% precision / 99.6% recall on a 59-medicine set.
+- Added 37 listings for 5 missing brands. Backup taken first:
+  `database/medfinder.before-listed-brands-20261127.db`. If a brand is missing in the demo, run
+  `etl/add_listed_brands.py`.
+
+**Known issues before the demo.**
+- Ciplox / Cifran rows are mislabelled as ofloxacin. Avoid them in the demo.
+- PharmEasy was blocking the laptop on 2026-11-27. Test one search about 30 minutes before the demo.
+- Product photos load from 1mg servers, so they are fine for a local demo only.
+
 ## Non-negotiable rules
 
 1. **Composition decides matching.** Products are only compared when
