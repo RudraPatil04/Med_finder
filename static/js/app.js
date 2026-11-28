@@ -434,6 +434,7 @@
         const data = await fetchJson("/api/substitutes/" + encodeURIComponent(medicine.id) + "?limit=6");
         if (requestId !== state.searchRequestId) return;
         clearCheaperAlternatives();
+        renderDetailSummary(data);
         if (!data || !data.success) return;
 
         const cheaper = (data.same_composition_alternatives || []).filter(function (item) {
@@ -477,23 +478,8 @@
             '<p>' + blurb + '</p></div>' +
             '<span class="count-badge">' + items.length + '</span>' +
             '</div>' +
-            '<div class="cheaper-list">' + items.map(function (item) {
-                const unitLabel = item.price_per_unit_value
-                    ? 'Rs. ' + formatUnitPrice(item.price_per_unit_value) + ' per unit'
-                    : (item.savings_basis === 'per pack' ? 'Same pack size' : '');
-                return '<a class="cheaper-item" href="/medicine/' + encodeURIComponent(item.id) + '">' +
-                    '<div class="cheaper-copy"><strong>' + escapeHtml(item.medicine_name) + '</strong>' +
-                    '<small>' + escapeHtml(item.brand_name || item.manufacturer || 'Same composition') +
-                    ' · ' + escapeHtml(item.pack_size || 'Pack unknown') + '</small></div>' +
-                    '<div class="cheaper-price"><span>Rs. ' + formatPrice(item.price) + '</span>' +
-                    (priceKnown && item.savings_reliable
-                        ? '<small class="savings-badge ' + savingsClass(item.savings_percent) + '">Save ' + Number(item.savings_percent).toFixed(0) + '%</small>'
-                        : (Number(item.estimated_savings_percent || 0) > 0
-                            ? '<small class="savings-badge estimated">Est. save ' + Number(item.estimated_savings_percent).toFixed(0) + '%</small>'
-                            : '') + '<small>Catalog price (unverified)</small>') +
-                    (unitLabel ? '<small>' + escapeHtml(unitLabel) + '</small>' : '') +
-                    '</div></a>';
-            }).join('') + '</div>';
+            (items.length > 1 ? sortToggle() : '') +
+            '<div class="cheaper-list" data-cheaper-list>' + renderCheaperItems(items, priceKnown, "unit") + '</div>';
 
         // A published generic list price prices a different product. A per-unit
         // difference is shown only when the list and this brand's price are both current.
@@ -526,7 +512,172 @@
 
         panel.innerHTML = catalogHtml + referenceHtml;
         panel.hidden = false;
+        const toggle = panel.querySelector("[data-sort-toggle]");
+        if (toggle) {
+            toggle.addEventListener("click", function (event) {
+                const button = event.target.closest("[data-sort]");
+                if (!button) return;
+                toggle.querySelectorAll("[data-sort]").forEach(function (b) {
+                    b.setAttribute("aria-pressed", b === button ? "true" : "false");
+                });
+                panel.querySelector("[data-cheaper-list]").innerHTML = renderCheaperItems(items, priceKnown, button.dataset.sort);
+            });
+        }
     }
+
+    function sortToggle() {
+        return '<div class="sort-toggle" role="group" aria-label="Sort options" data-sort-toggle>' +
+            '<span>Sort by</span>' +
+            '<button type="button" data-sort="unit" aria-pressed="true">Price per unit</button>' +
+            '<button type="button" data-sort="pack" aria-pressed="false">Pack price</button></div>';
+    }
+
+    function renderCheaperItems(items, priceKnown, mode) {
+        const badges = alternativeBadges(items, priceKnown);
+        return sortAlternatives(items, mode).map(function (item) {
+            const unitLabel = item.price_per_unit_value
+                ? 'Rs. ' + formatUnitPrice(item.price_per_unit_value) + ' per unit'
+                : (item.savings_basis === 'per pack' ? 'Same pack size' : '');
+            const labels = badges[String(item.id)] || [];
+            return '<a class="cheaper-item" href="/medicine/' + encodeURIComponent(item.id) + '">' +
+                '<div class="cheaper-copy"><strong>' + escapeHtml(item.medicine_name) + '</strong>' +
+                '<small>' + escapeHtml(item.brand_name || item.manufacturer || 'Same composition') +
+                ' · ' + escapeHtml(item.pack_size || 'Pack unknown') + '</small>' +
+                (labels.length ? '<span class="pick-badges">' + labels.map(function (label) {
+                    return '<span class="pick-badge' + (label === 'Verified saving' ? ' verified' : '') + '">' + escapeHtml(label) + '</span>';
+                }).join('') + '</span>' : '') +
+                '</div>' +
+                '<div class="cheaper-price"><span>Rs. ' + formatPrice(item.price) + '</span>' +
+                (priceKnown && item.savings_reliable
+                    ? '<small class="savings-badge ' + savingsClass(item.savings_percent) + '">Save ' + Number(item.savings_percent).toFixed(0) + '%</small>'
+                    : (Number(item.estimated_savings_percent || 0) > 0
+                        ? '<small class="savings-badge estimated">Est. save ' + Number(item.estimated_savings_percent).toFixed(0) + '%</small>'
+                        : '') + '<small>Catalog price (unverified)</small>') +
+                (unitLabel ? '<small>' + escapeHtml(unitLabel) + '</small>' : '') +
+                '</div></a>';
+        }).join('');
+    }
+
+    // The detail page's summary box, filled from the same /api/substitutes answer
+    // as the list below it. No other request is made.
+    function renderDetailSummary(data) {
+        const box = document.getElementById("detailSummary");
+        if (!box) return;
+        const summary = alternativesSummary(data);
+        box.dataset.tone = summary.tone;
+        box.querySelector("[data-summary-text]").textContent = summary.text;
+    }
+
+    // --- alternatives-summary:start
+    // Pure functions (no DOM, no network). test_detail_page.py runs this block in node.
+    function summaryRupees(value) {
+        const number = Math.round(Number(value || 0) * 100) / 100;
+        return "Rs. " + (Number.isInteger(number) ? String(number) : number.toFixed(2));
+    }
+
+    function summaryPrice(item) {
+        return summaryRupees(item.price) + (item.pack_size ? " for " + item.pack_size : "") +
+            (Number(item.price_per_unit_value || 0) > 0 ? " (" + summaryRupees(item.price_per_unit_value) + " per unit)" : "");
+    }
+
+    function unitPriceOf(item) {
+        return Number(item.price_per_unit_value || 0) || Number(item.price || 0);
+    }
+
+    function sortAlternatives(items, mode) {
+        return (items || []).slice().sort(function (a, b) {
+            if (mode === "pack") return Number(a.price || 0) - Number(b.price || 0) || unitPriceOf(a) - unitPriceOf(b);
+            return unitPriceOf(a) - unitPriceOf(b) || Number(a.price || 0) - Number(b.price || 0);
+        });
+    }
+
+    // Labels that are true of the listed options only: the lowest pack price, the
+    // lowest price per unit, and a saving backed by two prices checked within 30 days.
+    function alternativeBadges(items, priceKnown) {
+        const list = items || [];
+        const badges = {};
+        function add(item, label) {
+            const key = String(item.id);
+            (badges[key] = badges[key] || []).push(label);
+        }
+        if (list.length > 1) {
+            add(sortAlternatives(list, "pack")[0], "Cheapest pack");
+            if (list.some(function (item) { return Number(item.price_per_unit_value || 0) > 0; })) {
+                add(sortAlternatives(list, "unit")[0], "Lowest per unit");
+            }
+        }
+        if (priceKnown) {
+            list.forEach(function (item) {
+                if (item.savings_reliable && Number(item.savings_percent || 0) > 0) add(item, "Verified saving");
+            });
+        }
+        return badges;
+    }
+
+    function alternativesSummary(data) {
+        const caution = " Same ingredients, strength and form does not make them interchangeable: ask your doctor or pharmacist before switching.";
+        if (!data || !data.success) {
+            return { tone: "muted", text: "Same-composition options could not be loaded right now. Ask your pharmacist about lower-priced options." };
+        }
+        if (data.comparison_status === "restricted_class") {
+            return {
+                tone: "warning",
+                text: "No alternatives are shown for this medicine" +
+                    (data.restricted_class_reason ? " because " + data.restricted_class_reason : "") +
+                    ". Any change to this kind of medicine needs your doctor's or pharmacist's advice."
+            };
+        }
+        const cheaper = (data.same_composition_alternatives || []).filter(function (item) {
+            return Number(item.savings_percent || 0) > 0 && Number(item.price || 0) > 0;
+        });
+        const options = (data.same_composition_options || []).filter(function (item) {
+            return Number(item.price || 0) > 0;
+        });
+        const references = (data.reference_price_options || []).filter(function (item) {
+            return Number(item.price || 0) > 0;
+        });
+        function count(total, shown, words) {
+            const n = Math.max(Number(total || 0), shown);
+            return n + " " + words.replace("option", n === 1 ? "option" : "options") +
+                (n > shown ? " (the " + shown + " lowest per unit are listed)" : "");
+        }
+        if (cheaper.length) {
+            const best = sortAlternatives(cheaper, "unit")[0];
+            return {
+                tone: "verified",
+                text: count(data.same_composition_count, cheaper.length, "cheaper same-composition option") +
+                    " with recently checked prices. Lowest per unit is " + best.medicine_name + " at " + summaryPrice(best) +
+                    ", a verified saving of " + Number(best.savings_percent).toFixed(0) + "% " + (best.savings_basis || "per unit") +
+                    " (both prices checked in the last 30 days)." + caution
+            };
+        }
+        if (options.length) {
+            const best = sortAlternatives(options, "unit")[0];
+            const estimate = Number(best.estimated_savings_percent || 0);
+            let text = count(data.same_composition_option_count, options.length, "same-composition option") +
+                " at catalog prices. Lowest per unit is " + best.medicine_name + " at " + summaryPrice(best);
+            if (estimate > 0) {
+                text += ", an estimated " + estimate.toFixed(0) + "% less per unit than this medicine's catalog price" +
+                    " (estimated saving vs catalog price; prices not verified as current).";
+            } else if (!data.reference_price_available) {
+                text += ". This medicine has no recorded price, so no saving is estimated.";
+            } else {
+                text += ". No saving against this medicine's catalog price is estimated.";
+            }
+            return { tone: estimate > 0 ? "estimated" : "muted", text: text + caution };
+        }
+        if (references.length) {
+            return {
+                tone: "muted",
+                text: "No other brand with the same composition and a recorded price was found. A Jan Aushadhi list price for the same ingredients and strength is shown with the price." + caution
+            };
+        }
+        return {
+            tone: "muted",
+            text: "No other product with the same recorded ingredients, strength and form and a recorded price was found for this medicine."
+        };
+    }
+    // --- alternatives-summary:end
 
     function savingsClass(percent) {
         const value = Number(percent || 0);
@@ -1044,12 +1195,29 @@
             (m.apiSource ? '<p class="subline">Added from the ' + escapeHtml(m.apiSource) + '.' + (Number(m.price) > 0 ? ' The price shown is the live listing price from that catalog.' : ' No price is recorded for this product.') + '</p>' : '') +
             '<dl class="field-grid"><div><dt>Strength</dt><dd>' + escapeHtml(m.strength || "-") + '</dd></div><div><dt>Form</dt><dd>' + escapeHtml(m.form || "-") + '</dd></div><div><dt>Composition</dt><dd>' + escapeHtml(m.composition || "-") + '</dd></div></dl>' +
             '</article>' +
-            '<article class="ai-panel"><h2><span class="icon icon-sparkles"></span> AI Recommendation</h2><p>Review composition, strength, and prescription status carefully. Confirm alternatives with a doctor or pharmacist before switching medicines.</p></article>' +
+            '<article class="ai-panel" id="detailSummary" aria-live="polite"><h2><span class="icon icon-shuffle"></span> Price summary</h2>' +
+            '<p data-summary-text>Checking same-composition options and prices…</p></article>' +
             '<div class="detail-info-grid">' +
             usesCard(item.ingredient_uses, item.ingredient_uses_note) +
             infoCard("Side Effects", "shield", ["Check the product label", "Report unusual reactions"]) +
             infoCard("Warnings", "heart", [m.rx ? "Prescription required" : "Follow label directions", "Consult a doctor before starting"]) +
-            '</div></section>';
+            '</div>' +
+            pharmacistQuestions() +
+            '</section>';
+    }
+
+    // General questions only: nothing here is advice about this particular medicine.
+    function pharmacistQuestions() {
+        const questions = [
+            "Does this option have the same ingredients, strength and form as my prescription?",
+            "Is it all right for me to change brands, given my other medicines and health conditions?",
+            "How and when should I take it, and for how long?",
+            "Which side effects should I watch for, and when should I see a doctor?",
+            "Is a Jan Aushadhi generic with the same composition available near me?",
+            "How should I store it?"
+        ];
+        return '<article class="info-panel questions-panel"><h3><span class="icon icon-message"></span>Questions to ask your pharmacist</h3><ul>' +
+            questions.map(function (q) { return '<li>' + escapeHtml(q) + '</li>'; }).join('') + '</ul></article>';
     }
 
     // Links out only: no order or payment happens in this app, and no stock is claimed.

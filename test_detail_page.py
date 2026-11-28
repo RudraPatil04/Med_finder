@@ -3,6 +3,9 @@ import pathlib
 import unittest
 from unittest import mock
 from urllib.parse import parse_qs, urlparse
+import json
+import shutil
+import subprocess
 
 from backend.ingredient_uses import USES, ALIASES, buy_links, ingredient_use, ingredient_uses
 
@@ -101,6 +104,132 @@ class DetailPageScriptTests(unittest.TestCase):
         block = self.js[start:self.js.index("function setupScanner")]
         self.assertIn("loadCheaperAlternatives(data.data", block)
         self.assertIn("Not proven interchangeable: ask your doctor or pharmacist", self.js)
+
+
+def _summary_block(js):
+    start = js.index("// --- alternatives-summary:start")
+    return js[start:js.index("// --- alternatives-summary:end")]
+
+
+NODE = shutil.which("node")
+
+
+@unittest.skipUnless(NODE, "node is not installed; the summary logic is still covered by the text checks")
+class AlternativesSummaryTests(unittest.TestCase):
+    """Runs the pure summary/badge/sort functions from app.js in node."""
+
+    def run_js(self, expression, data):
+        js = (ROOT / "static" / "js" / "app.js").read_text(encoding="utf-8")
+        script = _summary_block(js) + "\nconst data = " + json.dumps(data) + ";\n" + \
+            "process.stdout.write(JSON.stringify(" + expression + "));"
+        out = subprocess.run([NODE, "-e", script], capture_output=True, text=True, check=True, timeout=30)
+        return json.loads(out.stdout)
+
+    def summary(self, data):
+        return self.run_js("alternativesSummary(data)", data)
+
+    OPTIONS = [
+        {"id": 2, "medicine_name": "Brand B", "price": 30, "pack_size": "10 tablets", "price_per_unit_value": 3.0,
+         "estimated_savings_percent": 40.0},
+        {"id": 1, "medicine_name": "Aclonac", "price": 60, "pack_size": "30 tablets", "price_per_unit_value": 2.0,
+         "estimated_savings_percent": 60.0},
+        {"id": 3, "medicine_name": "Brand C", "price": 45, "pack_size": "10 tablets", "price_per_unit_value": 4.5},
+    ]
+
+    def test_estimated_saving_is_labelled_as_estimate(self):
+        result = self.summary({"success": True, "comparison_status": "catalog_price_unverified",
+                               "reference_price_available": True,
+                               "same_composition_options": self.OPTIONS, "same_composition_option_count": 7})
+        text = result["text"]
+        self.assertEqual(result["tone"], "estimated")
+        self.assertTrue(text.startswith("7 same-composition options (the 3 lowest per unit are listed) at catalog prices."))
+        self.assertIn("Lowest per unit is Aclonac at Rs. 60 for 30 tablets (Rs. 2 per unit)", text)
+        self.assertIn("an estimated 60% less per unit", text)
+        self.assertIn("estimated saving vs catalog price", text)
+        self.assertNotIn("verified saving", text)
+        self.assertIn("does not make them interchangeable", text)
+        self.assertIn("ask your doctor or pharmacist", text)
+
+    def test_verified_saving_needs_the_checked_list(self):
+        cheaper = [{"id": 5, "medicine_name": "Cheapo", "price": 20, "pack_size": "10 tablets",
+                    "price_per_unit_value": 2.0, "savings_percent": 47.2, "savings_basis": "per unit",
+                    "savings_reliable": True}]
+        result = self.summary({"success": True, "same_composition_alternatives": cheaper,
+                               "same_composition_count": 1, "same_composition_options": self.OPTIONS})
+        self.assertEqual(result["tone"], "verified")
+        self.assertTrue(result["text"].startswith("1 cheaper same-composition option with recently checked prices."))
+        self.assertIn("a verified saving of 47% per unit (both prices checked in the last 30 days)", result["text"])
+
+    def test_no_estimate_when_this_medicine_has_no_price(self):
+        options = [dict(self.OPTIONS[2])]
+        result = self.summary({"success": True, "reference_price_available": False,
+                               "same_composition_options": options})
+        self.assertIn("1 same-composition option at catalog prices", result["text"])
+        self.assertIn("no recorded price, so no saving is estimated", result["text"])
+        self.assertNotIn("%", result["text"])
+
+    def test_no_alternatives_said_plainly(self):
+        result = self.summary({"success": True, "same_composition_options": [], "same_composition_alternatives": []})
+        self.assertIn("No other product with the same recorded ingredients", result["text"])
+
+    def test_restricted_class_offers_nothing(self):
+        result = self.summary({"success": True, "comparison_status": "restricted_class",
+                               "restricted_class_reason": "it has a narrow therapeutic index",
+                               "same_composition_options": self.OPTIONS})
+        self.assertEqual(result["tone"], "warning")
+        self.assertIn("No alternatives are shown for this medicine because it has a narrow therapeutic index", result["text"])
+        self.assertNotIn("Aclonac", result["text"])
+
+    def test_failed_request(self):
+        self.assertEqual(self.summary(None)["tone"], "muted")
+        self.assertEqual(self.summary({"success": False})["tone"], "muted")
+
+    def test_badges_mark_cheapest_pack_and_lowest_per_unit(self):
+        badges = self.run_js("alternativeBadges(data, false)", self.OPTIONS)
+        self.assertEqual(badges, {"2": ["Cheapest pack"], "1": ["Lowest per unit"]})
+
+    def test_verified_badge_only_on_checked_savings(self):
+        items = [{"id": 1, "price": 10, "price_per_unit_value": 1, "savings_percent": 20, "savings_reliable": True}]
+        self.assertEqual(self.run_js("alternativeBadges(data, true)", items), {"1": ["Verified saving"]})
+        self.assertEqual(self.run_js("alternativeBadges(data, false)", items), {})
+
+    def test_single_option_gets_no_ranking_badge(self):
+        self.assertEqual(self.run_js("alternativeBadges(data, false)", self.OPTIONS[:1]), {})
+
+    def test_sort_by_unit_and_pack(self):
+        self.assertEqual(self.run_js("sortAlternatives(data, 'unit').map(i => i.id)", self.OPTIONS), [1, 2, 3])
+        self.assertEqual(self.run_js("sortAlternatives(data, 'pack').map(i => i.id)", self.OPTIONS), [2, 3, 1])
+        self.assertEqual(self.run_js("data.map(i => i.id)", self.OPTIONS), [2, 1, 3])
+
+
+class DetailSummaryScriptTests(unittest.TestCase):
+    def setUp(self):
+        self.js = (ROOT / "static" / "js" / "app.js").read_text(encoding="utf-8")
+
+    def test_generic_ai_recommendation_is_gone(self):
+        self.assertNotIn("AI Recommendation", self.js)
+        self.assertIn('id="detailSummary" aria-live="polite"', self.js)
+
+    def test_summary_uses_the_existing_substitutes_answer(self):
+        start = self.js.index("async function loadCheaperAlternatives")
+        block = self.js[start:self.js.index("function sortToggle")]
+        self.assertEqual(block.count("fetchJson("), 1)
+        self.assertIn("renderDetailSummary(data)", block)
+        summary = _summary_block(self.js)
+        self.assertNotIn("fetch", summary)
+        self.assertNotIn("document", summary)
+
+    def test_summary_never_claims_interchangeability(self):
+        summary = _summary_block(self.js).lower()
+        self.assertNotIn("is interchangeable", summary)
+        self.assertNotIn("can be swapped", summary)
+        self.assertIn("does not make them interchangeable", summary)
+
+    def test_pharmacist_questions_are_on_the_detail_page(self):
+        start = self.js.index("function renderMedicineDetail")
+        block = self.js[start:self.js.index("function pharmacistQuestions")]
+        self.assertIn("pharmacistQuestions()", block)
+        self.assertIn("Questions to ask your pharmacist", self.js)
 
 
 if __name__ == "__main__":
